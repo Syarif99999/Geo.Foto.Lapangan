@@ -284,11 +284,14 @@ function catLabel(id){
 /* ==========================================================================
    PETA (Leaflet)
    ========================================================================== */
-function pinDivIcon(color){
+function pinDivIcon(color, label){
   color = color || '#c8952c';
+  const svg = `<svg width="30" height="42" viewBox="0 0 30 42" xmlns="http://www.w3.org/2000/svg"><path d="M15 0C6.7 0 0 6.7 0 15c0 10.5 15 27 15 27s15-16.5 15-27C30 6.7 23.3 0 15 0z" fill="${color}"/><circle cx="15" cy="15" r="6.2" fill="#0f2647"/></svg>`;
+  const trimmed = (label || '').trim();
+  const labelHtml = trimmed ? `<div class="pin-label">${escapeHtml(trimmed)}</div>` : '';
   return L.divIcon({
     className: 'leaflet-pin',
-    html: `<svg width="30" height="42" viewBox="0 0 30 42" xmlns="http://www.w3.org/2000/svg"><path d="M15 0C6.7 0 0 6.7 0 15c0 10.5 15 27 15 27s15-16.5 15-27C30 6.7 23.3 0 15 0z" fill="${color}"/><circle cx="15" cy="15" r="6.2" fill="#0f2647"/></svg>`,
+    html: `<div style="position:relative;width:30px;height:42px;">${labelHtml}${svg}</div>`,
     iconSize:[30,42], iconAnchor:[15,42], popupAnchor:[0,-38]
   });
 }
@@ -355,10 +358,11 @@ async function renderOverviewMap(){
   const bounds = [];
   entries.forEach(en => {
     if(en.lat == null || en.lng == null) return;
-    const marker = L.marker([en.lat, en.lng], { icon: pinDivIcon() }).addTo(overviewMap);
+    const marker = L.marker([en.lat, en.lng], { icon: pinDivIcon('#c8952c', en.businessName) }).addTo(overviewMap);
     const addr = en.addressManual || en.addressAuto || 'Alamat belum tersedia';
     const thumbUrl = URL.createObjectURL(en.thumbBlob);
-    marker.bindPopup(`<div style="max-width:180px;"><img src="${thumbUrl}" style="width:100%;border-radius:6px;margin-bottom:6px;"><div style="font-size:.78rem;font-weight:700;color:#0f2647;">${escapeHtml(addr)}</div><div style="font-size:.68rem;color:#888;margin-top:2px;">${fmtDate(en.timestamp)}</div></div>`);
+    const titleLine = en.businessName ? escapeHtml(en.businessName) : escapeHtml(addr);
+    marker.bindPopup(`<div style="max-width:180px;"><img src="${thumbUrl}" style="width:100%;border-radius:6px;margin-bottom:6px;"><div style="font-size:.78rem;font-weight:700;color:#0f2647;">${titleLine}</div>${en.businessName ? `<div style=\"font-size:.7rem;color:#555;margin-top:1px;\">${escapeHtml(addr)}</div>` : ''}<div style="font-size:.68rem;color:#888;margin-top:2px;">${fmtDate(en.timestamp)}</div></div>`);
     overviewMarkers.push(marker);
     bounds.push([en.lat, en.lng]);
   });
@@ -368,7 +372,7 @@ async function renderOverviewMap(){
 
 /* ---- Edit map ---- */
 let editMap = null, editMarker = null, editLayers = null, editingId = null;
-function initEditMap(lat, lng){
+function initEditMap(lat, lng, businessName){
   const el = document.getElementById('editMap');
   if(editMap){ editMap.remove(); editMap = null; }
   const center = [lat, lng];
@@ -376,7 +380,7 @@ function initEditMap(lat, lng){
   const osm = makeOsmLayer().addTo(editMap);
   const sat = makeSatLayer();
   editLayers = { osm, sat };
-  editMarker = L.marker(center, { draggable:true, icon: pinDivIcon() }).addTo(editMap);
+  editMarker = L.marker(center, { draggable:true, icon: pinDivIcon('#c8952c', businessName) }).addTo(editMap);
   editMarker.on('dragend', () => {
     const p = editMarker.getLatLng();
     syncEditCoordInputs(p.lat, p.lng);
@@ -501,6 +505,7 @@ async function processQueueItem(){
   document.getElementById('addrAuto').value = '';
   document.getElementById('addrManual').value = '';
   document.getElementById('noteInput').value = '';
+  document.getElementById('businessNameInput').value = '';
   updateCoordBox();
   initReviewMap(lat, lng);
   setReviewLoading(false);
@@ -639,8 +644,10 @@ async function onSaveDraft(){
   }
   const addrManual = document.getElementById('addrManual').value.trim();
   const note = document.getElementById('noteInput').value.trim();
+  const businessName = document.getElementById('businessNameInput').value.trim();
   const entry = {
     category: currentCategory,
+    businessName: businessName,
     lat: currentDraft.lat, lng: currentDraft.lng,
     coordSource: currentDraft.coordSource || 'Manual',
     addressAuto: currentDraft.addressAuto || '',
@@ -746,6 +753,7 @@ async function renderList(){
     card.innerHTML = `
       <img class="entry-thumb" src="${thumbUrl}" data-id="${en.id}" alt="Foto">
       <div class="entry-body">
+        ${en.businessName ? `<div class="entry-business">${escapeHtml(en.businessName)}</div>` : ''}
         <div class="entry-addr">${escapeHtml(addr)}</div>
         <div class="entry-meta">📍 ${en.lat.toFixed(5)}, ${en.lng.toFixed(5)} &middot; ${fmtDate(en.timestamp)}</div>
         ${en.geocodePending ? `<div class="entry-pending">⏳ Alamat otomatis menunggu koneksi internet</div>` : ''}
@@ -802,10 +810,11 @@ function closePhotoOverlay(){
 async function openEditOverlay(id){
   const en = await getEntry(id);
   editingId = id;
+  document.getElementById('editBusinessName').value = en.businessName || '';
   document.getElementById('editAddrAuto').value = en.addressAuto || '';
   document.getElementById('editAddrManual').value = en.addressManual || en.addressAuto || '';
   document.getElementById('editNote').value = en.note || '';
-  initEditMap(en.lat, en.lng);
+  initEditMap(en.lat, en.lng, en.businessName);
   document.getElementById('editOverlay').classList.add('show');
 }
 function closeEditOverlay(){
@@ -818,6 +827,7 @@ async function saveEditOverlay(){
   const p = editMarker.getLatLng();
   await updateEntry(editingId, {
     lat: p.lat, lng: p.lng,
+    businessName: document.getElementById('editBusinessName').value.trim(),
     addressManual: document.getElementById('editAddrManual').value.trim(),
     note: document.getElementById('editNote').value.trim()
   });
@@ -838,6 +848,7 @@ async function exportExcel(){
     .map((en, i) => ({
       'No': i+1,
       'Kategori': catLabel(en.category),
+      'Nama Usaha / Objek Pajak': en.businessName || '',
       'Tanggal & Jam': fmtDate(en.timestamp),
       'Latitude': en.lat,
       'Longitude': en.lng,
@@ -851,7 +862,7 @@ async function exportExcel(){
 
   const ws = XLSX.utils.json_to_sheet(rows);
   ws['!cols'] = [
-    {wch:4},{wch:20},{wch:18},{wch:12},{wch:12},{wch:24},
+    {wch:4},{wch:20},{wch:26},{wch:18},{wch:12},{wch:12},{wch:24},
     {wch:40},{wch:40},{wch:32},{wch:22},{wch:14}
   ];
   const wb = XLSX.utils.book_new();
@@ -995,6 +1006,13 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btnExportExcel').addEventListener('click', exportExcel);
   document.getElementById('btnExportZip').addEventListener('click', exportZip);
+
+  document.getElementById('businessNameInput').addEventListener('input', (e) => {
+    if(reviewMarker) reviewMarker.setIcon(pinDivIcon('#c8952c', e.target.value));
+  });
+  document.getElementById('editBusinessName').addEventListener('input', (e) => {
+    if(editMarker) editMarker.setIcon(pinDivIcon('#c8952c', e.target.value));
+  });
 
   document.getElementById('photoOverlay').addEventListener('click', (e) => {
     if(e.target.id === 'photoOverlay') closePhotoOverlay();
