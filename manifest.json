@@ -1,0 +1,17 @@
+{
+  "name": "Geo Foto Lapangan - BAPENDA Paser",
+  "short_name": "Geo Foto",
+  "description": "Aplikasi dokumentasi foto lapangan dengan koordinat GPS otomatis untuk pendataan pajak daerah BAPENDA Kabupaten Paser.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f2647",
+  "theme_color": "#0f2647",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
