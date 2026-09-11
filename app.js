@@ -997,10 +997,9 @@ async function shareEntry(id){
     const safeName = (entry.businessName || catLabel(entry.category)).replace(/[^a-z0-9]+/gi, '_');
     const fileName = `GeoFoto_${safeName}_${new Date(entry.timestamp).toISOString().slice(0,10)}.jpg`;
     const file = new File([stampedBlob], fileName, { type:'image/jpeg' });
-    const shareText = `${entry.businessName ? entry.businessName + ' — ' : ''}${catLabel(entry.category)}\n${entry.addressManual || entry.addressAuto || ''}\n📍 ${entry.lat.toFixed(6)}, ${entry.lng.toFixed(6)}`;
 
     if(navigator.canShare && navigator.canShare({ files:[file] })){
-      await navigator.share({ files:[file], title: entry.businessName || catLabel(entry.category), text: shareText });
+      await navigator.share({ files:[file] });
     } else {
       const url = URL.createObjectURL(stampedBlob);
       const a = document.createElement('a');
