@@ -917,6 +917,67 @@ function wrapText(ctx, text, maxWidth){
   return lines;
 }
 
+function roundRectPath(ctx, x, y, w, h, r){
+  const rr = Math.min(r, w/2, h/2);
+  ctx.beginPath();
+  ctx.moveTo(x+rr, y);
+  ctx.lineTo(x+w-rr, y);
+  ctx.arcTo(x+w, y, x+w, y+rr, rr);
+  ctx.lineTo(x+w, y+h-rr);
+  ctx.arcTo(x+w, y+h, x+w-rr, y+h, rr);
+  ctx.lineTo(x+rr, y+h);
+  ctx.arcTo(x, y+h, x, y+h-rr, rr);
+  ctx.lineTo(x, y+rr);
+  ctx.arcTo(x, y, x+rr, y, rr);
+  ctx.closePath();
+}
+
+const PIN_SVG_PATH = 'M15 0C6.7 0 0 6.7 0 15c0 10.5 15 27 15 27s15-16.5 15-27C30 6.7 23.3 0 15 0z';
+function drawMapPin(ctx, tipX, tipY, desiredHeight, color){
+  const scale = desiredHeight / 42;
+  const path = new Path2D(PIN_SVG_PATH);
+  ctx.save();
+  ctx.translate(tipX - 15*scale, tipY - 42*scale);
+  ctx.scale(scale, scale);
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 3/scale;
+  ctx.fillStyle = color;
+  ctx.fill(path);
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  ctx.arc(15, 15, 6.4, 0, Math.PI*2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.restore();
+}
+
+function deriveRegionTitle(addressStr){
+  if(!addressStr) return '';
+  const parts = addressStr.split(',').map(s => s.trim()).filter(Boolean);
+  return parts.slice(-3).join(', ');
+}
+
+// Format: "Jumat, 11/09/2026 10:32 AM GMT+08.00"
+function formatStampDate(ts){
+  const d = new Date(ts);
+  const days = ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'];
+  const dayName = days[d.getDay()];
+  const dd = String(d.getDate()).padStart(2,'0');
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  const yyyy = d.getFullYear();
+  let hours = d.getHours();
+  const minutes = String(d.getMinutes()).padStart(2,'0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12; if(hours === 0) hours = 12;
+  const hh = String(hours).padStart(2,'0');
+  const offsetMin = -d.getTimezoneOffset();
+  const sign = offsetMin >= 0 ? '+' : '-';
+  const offH = Math.floor(Math.abs(offsetMin)/60);
+  const offM = Math.abs(offsetMin)%60;
+  const gmtStr = `GMT${sign}${String(offH).padStart(2,'0')}.${String(offM).padStart(2,'0')}`;
+  return `${dayName}, ${dd}/${mm}/${yyyy} ${hh}:${minutes} ${ampm} ${gmtStr}`;
+}
+
 async function generateStampedPhoto(entry){
   const img = await new Promise((resolve, reject) => {
     const image = new Image();
@@ -937,55 +998,95 @@ async function generateStampedPhoto(entry){
   const address = entry.addressManual || entry.addressAuto || '';
   const businessName = entry.businessName || '';
   const catText = catLabel(entry.category);
-  const coordText = `${entry.lat.toFixed(6)}, ${entry.lng.toFixed(6)}`;
-  const dateText = fmtDate(entry.timestamp);
-  const titleLine = businessName ? `${businessName} — ${catText}` : catText;
+  const coordLine = `Lat ${entry.lat.toFixed(6)}, Long ${entry.lng.toFixed(6)}`;
+  const dateLine = formatStampDate(entry.timestamp);
+  const regionTitle = businessName || deriveRegionTitle(address) || catText;
 
-  const pad = Math.round(W * 0.035);
-  const fsBig = Math.max(20, Math.round(W * 0.05));
-  const fsMed = Math.max(16, Math.round(W * 0.036));
-  const fsSmall = Math.max(13, Math.round(W * 0.026));
-  const lineSpacing = 1.4;
+  const outerMargin = Math.round(W * 0.028);
+  const innerPad = Math.round(W * 0.03);
+  const mapBoxGap = Math.round(W * 0.028);
+  const mapBoxSize = Math.round(W * 0.24);
 
-  ctx.font = `${fsMed}px sans-serif`;
-  const addrLines = address ? wrapText(ctx, address, W - pad*2) : [];
+  const fsTitle = Math.max(17, Math.round(W * 0.040));
+  const fsSub   = Math.max(12, Math.round(W * 0.026));
+  const fsCoord = Math.max(15, Math.round(W * 0.030));
+  const fsSmall = Math.max(11, Math.round(W * 0.021));
+  const fsTiny  = Math.max(9,  Math.round(W * 0.017));
+  const lineSpacing = 1.32;
 
-  const lines = [
-    { text: titleLine, font:`bold ${fsMed}px sans-serif`, size:fsMed, color:'#ffffff' }
-  ];
-  addrLines.slice(0,2).forEach(l => lines.push({ text:l, font:`${fsMed}px sans-serif`, size:fsMed, color:'#e6e6e6' }));
-  lines.push({ text:`📍 ${coordText}`, font:`bold ${fsBig}px monospace`, size:fsBig, color:'#e0b354' });
-  lines.push({ text:dateText, font:`${fsSmall}px sans-serif`, size:fsSmall, color:'#cfcfcf' });
+  const panelWidth = W - outerMargin*2;
+  const textColWidth = panelWidth - innerPad*2 - mapBoxGap - mapBoxSize;
 
-  let bandHeight = pad * 1.7;
-  lines.forEach(l => bandHeight += l.size * lineSpacing);
+  ctx.font = `${fsSub}px sans-serif`;
+  const addrLines = address ? wrapText(ctx, address, textColWidth).slice(0,2) : [];
 
-  const bandTop = H - bandHeight;
-  const grad = ctx.createLinearGradient(0, bandTop - 50, 0, H);
-  grad.addColorStop(0, 'rgba(15,38,71,0)');
-  grad.addColorStop(1, 'rgba(15,38,71,0.9)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, bandTop - 50, W, H - (bandTop - 50));
+  const textLines = [];
+  textLines.push({ text: regionTitle, font:`bold ${fsTitle}px sans-serif`, size:fsTitle, color:'#ffffff' });
+  if(businessName) textLines.push({ text: catText, font:`${fsSub}px sans-serif`, size:fsSub, color:'#cfd6e0' });
+  addrLines.forEach(l => textLines.push({ text:l, font:`${fsSub}px sans-serif`, size:fsSub, color:'#d8dde5' }));
+  textLines.push({ text: coordLine, font:`bold ${fsCoord}px monospace`, size:fsCoord, color:'#e0b354' });
+  textLines.push({ text: dateLine, font:`${fsSmall}px sans-serif`, size:fsSmall, color:'#b8c0cc' });
+  textLines.push({ text:'Dicatat: GeoFoto Lapangan · BAPENDA Paser', font:`${fsTiny}px sans-serif`, size:fsTiny, color:'#93a0b0' });
 
-  let y = bandTop + pad * 0.75;
+  let textBlockHeight = 0;
+  textLines.forEach(l => textBlockHeight += l.size * lineSpacing);
+
+  const panelHeight = Math.max(mapBoxSize, textBlockHeight) + innerPad*2;
+  const panelX = outerMargin;
+  const panelY = H - outerMargin - panelHeight;
+  const panelRadius = Math.round(W * 0.018);
+
+  // panel gelap
+  roundRectPath(ctx, panelX, panelY, panelWidth, panelHeight, panelRadius);
+  ctx.fillStyle = 'rgba(15,25,40,0.85)';
+  ctx.fill();
+
+  // kotak mini-map di kiri
+  const mapBoxX = panelX + innerPad;
+  const mapBoxY = panelY + (panelHeight - mapBoxSize)/2;
+  ctx.save();
+  roundRectPath(ctx, mapBoxX, mapBoxY, mapBoxSize, mapBoxSize, Math.round(W*0.014));
+  ctx.clip();
+  const mgrad = ctx.createLinearGradient(mapBoxX, mapBoxY, mapBoxX+mapBoxSize, mapBoxY+mapBoxSize);
+  mgrad.addColorStop(0, '#7c8f6e');
+  mgrad.addColorStop(0.5, '#8f9c78');
+  mgrad.addColorStop(1, '#6b7d5c');
+  ctx.fillStyle = mgrad;
+  ctx.fillRect(mapBoxX, mapBoxY, mapBoxSize, mapBoxSize);
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = Math.max(1, mapBoxSize*0.012);
+  ctx.beginPath();
+  ctx.moveTo(mapBoxX, mapBoxY + mapBoxSize*0.32);
+  ctx.lineTo(mapBoxX + mapBoxSize, mapBoxY + mapBoxSize*0.58);
+  ctx.moveTo(mapBoxX + mapBoxSize*0.22, mapBoxY);
+  ctx.lineTo(mapBoxX + mapBoxSize*0.62, mapBoxY + mapBoxSize);
+  ctx.stroke();
+
+  // efek "spread" biru khas GPS di bawah pin
+  const pinTipX = mapBoxX + mapBoxSize*0.5;
+  const pinTipY = mapBoxY + mapBoxSize*0.60;
+  ctx.beginPath();
+  ctx.ellipse(pinTipX, pinTipY + mapBoxSize*0.05, mapBoxSize*0.3, mapBoxSize*0.15, 0, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(70,130,255,0.4)';
+  ctx.fill();
+  ctx.restore();
+
+  // pin merah bergaya Google Maps
+  drawMapPin(ctx, pinTipX, pinTipY, mapBoxSize*0.55, '#ff3b30');
+
+  // kolom teks di kanan
+  const textX = mapBoxX + mapBoxSize + mapBoxGap;
+  let textY = panelY + innerPad + Math.max(0, (panelHeight - innerPad*2 - textBlockHeight)/2);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  lines.forEach(l => {
+  textLines.forEach(l => {
     ctx.font = l.font;
     ctx.fillStyle = l.color;
-    ctx.fillText(l.text, pad, y);
-    y += l.size * lineSpacing;
+    ctx.fillText(l.text, textX, textY);
+    textY += l.size * lineSpacing;
   });
 
-  ctx.font = `${fsSmall}px sans-serif`;
-  ctx.textAlign = 'right';
-  ctx.fillStyle = 'rgba(255,255,255,0.9)';
-  ctx.shadowColor = 'rgba(0,0,0,0.6)';
-  ctx.shadowBlur = 4;
-  ctx.fillText('GeoFoto Lapangan · BAPENDA Paser', W - pad, pad * 0.6);
-  ctx.shadowBlur = 0;
-
-  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.88));
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
 }
 
 async function shareEntry(id){
