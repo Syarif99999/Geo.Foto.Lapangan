@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
+<title>Peta Pantau - Geo Foto Lapangan BAPENDA Paser</title>
+<meta name="theme-color" content="#0f2647">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+
+<style>
+  :root{
+    --navy:#0f2647; --navy2:#173763; --gold:#c8952c; --gold-l:#e0b354;
+    --paper:#f6f4ee; --ink:#1c2430; --line:#dcd6c8;
+    --green:#2f6b4f; --red:#a8352b; --amber:#a1720f;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{font-family:'Segoe UI',Roboto,Arial,sans-serif;background:var(--paper);color:var(--ink);}
+  header{
+    background:linear-gradient(135deg,var(--navy),var(--navy2));color:#fff;
+    padding:16px 16px 14px 16px;text-align:center;position:relative;z-index:20;
+    box-shadow:0 4px 14px rgba(15,38,71,.18);
+  }
+  header h1{margin:0 0 3px 0;font-size:1.15rem;display:flex;align-items:center;justify-content:center;gap:8px;}
+  header p{margin:0;font-size:.72rem;opacity:.85;}
+  .back-link{position:absolute;left:14px;top:16px;color:#fff;text-decoration:none;font-size:.72rem;background:rgba(255,255,255,.14);padding:7px 10px;border-radius:8px;}
+  .live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#2ecc71;box-shadow:0 0 0 rgba(46,204,113,.6);animation:pulseDot 1.6s infinite;}
+  @keyframes pulseDot{0%{box-shadow:0 0 0 0 rgba(46,204,113,.6);}70%{box-shadow:0 0 0 8px rgba(46,204,113,0);}100%{box-shadow:0 0 0 0 rgba(46,204,113,0);}}
+
+  #configWarning{
+    display:none;background:#fbf1de;color:var(--amber);border-bottom:1px solid #eadfbf;
+    padding:12px 16px;font-size:.78rem;line-height:1.5;text-align:center;
+  }
+  #configWarning code{background:rgba(0,0,0,.06);padding:1px 5px;border-radius:4px;}
+
+  .toolbar{
+    display:flex;gap:8px;padding:10px 12px;overflow-x:auto;background:#fff;
+    border-bottom:1px solid var(--line);position:sticky;top:0;z-index:15;
+    -webkit-overflow-scrolling:touch;
+  }
+  .chip{
+    flex-shrink:0;display:flex;align-items:center;gap:5px;background:var(--paper);
+    border:1.5px solid var(--line);border-radius:20px;padding:7px 12px;font-size:.72rem;
+    font-weight:700;color:#555;cursor:pointer;white-space:nowrap;transition:all .12s;
+  }
+  .chip.active{background:var(--navy);border-color:var(--navy);color:#fff;}
+  .chip .dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
+
+  .stats-bar{
+    display:flex;gap:10px;padding:10px 14px;background:#fff;border-bottom:1px solid var(--line);
+    font-size:.72rem;color:#666;flex-wrap:wrap;align-items:center;
+  }
+  .stats-bar b{color:var(--navy);font-size:.86rem;}
+  .stats-bar .sep{color:var(--line);}
+
+  #mapWrap{position:relative;height:calc(100vh - 180px);min-height:340px;}
+  #mainMap{height:100%;width:100%;}
+  .map-sat-toggle{
+    position:absolute;top:10px;right:10px;z-index:401;background:#fff;border:1px solid var(--line);
+    border-radius:8px;padding:7px 10px;font-size:.72rem;font-weight:700;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.15);
+  }
+  .list-toggle-btn{
+    position:absolute;bottom:16px;left:50%;transform:translateX(-50%);z-index:401;
+    background:var(--navy);color:#fff;border:none;border-radius:24px;padding:11px 20px;
+    font-size:.78rem;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(15,38,71,.35);
+  }
+
+  #listPanel{
+    position:fixed;left:0;right:0;bottom:0;background:#fff;border-radius:16px 16px 0 0;
+    box-shadow:0 -6px 20px rgba(0,0,0,.2);max-height:70vh;overflow-y:auto;
+    transform:translateY(100%);transition:transform .25s ease;z-index:2000;
+  }
+  #listPanel.show{transform:translateY(0);}
+  .list-panel-header{
+    position:sticky;top:0;background:#fff;padding:12px 16px;border-bottom:1px solid var(--line);
+    display:flex;justify-content:space-between;align-items:center;
+  }
+  .list-panel-header h3{margin:0;font-size:.92rem;color:var(--navy);}
+  .list-panel-close{background:var(--paper);border:1px solid var(--line);border-radius:50%;width:32px;height:32px;font-size:1rem;cursor:pointer;}
+  .list-item{display:flex;gap:11px;padding:12px 16px;border-bottom:1px solid #f0ede4;cursor:pointer;}
+  .list-item:active{background:var(--paper);}
+  .list-item img{width:60px;height:60px;border-radius:8px;object-fit:cover;flex-shrink:0;background:#eee;}
+  .list-item-body{flex:1;min-width:0;}
+  .list-item-tag{display:inline-block;font-size:.64rem;font-weight:800;color:#fff;padding:2px 7px;border-radius:5px;margin-bottom:3px;}
+  .list-item-title{font-size:.82rem;font-weight:700;color:var(--navy);line-height:1.3;}
+  .list-item-addr{font-size:.72rem;color:#777;margin-top:1px;}
+  .list-item-time{font-size:.66rem;color:#aaa;margin-top:3px;}
+  .empty-state{text-align:center;padding:36px 16px;color:#8a93a3;font-size:.82rem;}
+
+  .leaflet-pin{background:none;border:none;}
+  .pin-label{
+    position:absolute;left:50%;bottom:46px;transform:translateX(-50%);
+    color:#fff;font-weight:800;font-size:11px;
+    padding:3px 8px;border-radius:6px;white-space:nowrap;max-width:150px;
+    overflow:hidden;text-overflow:ellipsis;box-shadow:0 2px 6px rgba(0,0,0,.3);
+    pointer-events:none;
+  }
+  .pin-label::after{content:'';position:absolute;bottom:-5px;left:50%;transform:translateX(-50%);border:5px solid transparent;}
+  .popup-card{max-width:190px;}
+  .popup-card img{width:100%;border-radius:6px;margin-bottom:6px;}
+  .popup-card .p-tag{display:inline-block;font-size:.62rem;font-weight:800;color:#fff;padding:2px 6px;border-radius:5px;margin-bottom:4px;}
+  .popup-card .p-title{font-size:.8rem;font-weight:700;color:var(--navy);line-height:1.3;}
+  .popup-card .p-addr{font-size:.7rem;color:#666;margin-top:2px;}
+  .popup-card .p-time{font-size:.65rem;color:#999;margin-top:3px;}
+</style>
+</head>
+<body>
+
+<header>
+  <a class="back-link" href="index.html">⬅ Beranda Petugas</a>
+  <h1>🛰️ Peta Pantau <span class="live-dot"></span></h1>
+  <p>Geo Foto Lapangan &middot; BAPENDA Kabupaten Paser &middot; data diperbarui otomatis (real-time)</p>
+</header>
+
+<div id="configWarning">
+  ⚠️ Peta Pantau belum aktif. Aplikasi ini butuh konfigurasi Firebase supaya data bisa muncul di sini secara publik.
+  Buka file <code>firebase-config.js</code> dan isi sesuai project Firebase kanda.
+</div>
+
+<div class="toolbar" id="filterBar"></div>
+
+<div class="stats-bar" id="statsBar">
+  <span>📍 <b id="statTotal">0</b> titik</span>
+  <span class="sep">|</span>
+  <span id="statUpdated">Menunggu data...</span>
+</div>
+
+<div id="mapWrap">
+  <div id="mainMap"></div>
+  <button type="button" class="map-sat-toggle" id="satToggle">🛰️ Satelit</button>
+  <button type="button" class="list-toggle-btn" id="listToggleBtn">📋 Lihat Daftar</button>
+</div>
+
+<div id="listPanel">
+  <div class="list-panel-header">
+    <h3>🗂️ Daftar Titik Terbaru</h3>
+    <button class="list-panel-close" id="listCloseBtn">✕</button>
+  </div>
+  <div id="listItems"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="pantau.js"></script>
+</body>
+</html>

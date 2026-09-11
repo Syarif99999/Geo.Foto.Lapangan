@@ -9,7 +9,9 @@ const CATEGORIES = [
   { id:'hiburan', label:'Kesenian & Hiburan', icon:'🎭', sub:'PBJT Kesenian/Hiburan' },
   { id:'mblb', label:'Pajak MBLB', icon:'⛏️', sub:'Mineral Bukan Logam' },
   { id:'parkir', label:'Pajak Parkir', icon:'🅿️', sub:'Pendataan Parkir' },
-  { id:'walet', label:'Sarang Burung Walet', icon:'🐦', sub:'Pajak Walet' }
+  { id:'walet', label:'Sarang Burung Walet', icon:'🐦', sub:'Pajak Walet' },
+  { id:'penagihan', label:'Penagihan', icon:'🧾', sub:'Penagihan Piutang Pajak' },
+  { id:'pbb_bphtb', label:'PBB & BPHTB', icon:'🏠', sub:'PBB & BPHTB' }
 ];
 
 const FALLBACK_CENTER = [-1.6136, 116.2019]; // Tanah Grogot, Paser
@@ -661,8 +663,10 @@ async function onSaveDraft(){
     // tandai entri ini supaya dicoba ulang otomatis begitu koneksi kembali ada.
     geocodePending: !currentDraft.addressAuto
   };
-  await addEntry(entry);
+  const localId = await addEntry(entry);
   showToast('Foto tersimpan ✅');
+  const synced = await syncEntryToCloud(localId, entry);
+  if(!synced) await updateEntry(localId, { cloudPending:true });
   qIndex++;
   processQueueItem();
   refreshMenuBadge(currentCategory);
@@ -728,6 +732,91 @@ async function retryPendingGeocodes(){
 }
 
 /* ==========================================================================
+   FIREBASE / CLOUD SYNC (untuk Peta Pantau publik)
+   ========================================================================== */
+let firestoreDB = null;
+let firebaseReady = false;
+
+function initFirebase(){
+  try{
+    if(typeof FIREBASE_CONFIG === 'undefined') return;
+    if(!FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey.indexOf('PASTE_') === 0) return; // belum diisi
+    if(typeof firebase === 'undefined') return; // SDK gagal dimuat (mis. offline)
+    firebase.initializeApp(FIREBASE_CONFIG);
+    firestoreDB = firebase.firestore();
+    firebaseReady = true;
+  }catch(e){
+    console.warn('Firebase belum aktif:', e);
+    firebaseReady = false;
+  }
+}
+initFirebase();
+
+function blobToDataURL(blob){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+// Mengirim satu entri ke Firestore supaya muncul di Peta Pantau publik.
+// Mengembalikan true kalau berhasil (atau kalau fitur cloud memang belum diaktifkan),
+// false kalau gagal (akan dicoba ulang otomatis nanti).
+async function syncEntryToCloud(localId, entry){
+  if(!firebaseReady) return true;
+  try{
+    const thumbDataUrl = await blobToDataURL(entry.thumbBlob);
+    await firestoreDB.collection(FIRESTORE_COLLECTION).doc(String(localId)).set({
+      category: entry.category,
+      businessName: entry.businessName || '',
+      lat: entry.lat,
+      lng: entry.lng,
+      address: entry.addressManual || entry.addressAuto || '',
+      note: entry.note || '',
+      timestamp: entry.timestamp,
+      thumbDataUrl: thumbDataUrl
+    });
+    return true;
+  }catch(e){
+    console.warn('Gagal sinkron ke cloud:', e);
+    return false;
+  }
+}
+
+async function deleteEntryFromCloud(localId){
+  if(!firebaseReady) return;
+  try{ await firestoreDB.collection(FIRESTORE_COLLECTION).doc(String(localId)).delete(); }
+  catch(e){ console.warn('Gagal hapus dari cloud:', e); }
+}
+
+let cloudRetryRunning = false;
+async function retryPendingCloudSync(){
+  if(!firebaseReady || !navigator.onLine || cloudRetryRunning) return;
+  cloudRetryRunning = true;
+  try{
+    const all = await getAllEntries();
+    const pending = all.filter(en => en.cloudPending);
+    if(pending.length === 0) return;
+    let ok = 0;
+    for(const en of pending){
+      if(!navigator.onLine) break;
+      const success = await syncEntryToCloud(en.id, en);
+      if(success){ await updateEntry(en.id, { cloudPending:false }); ok++; }
+    }
+    if(ok > 0){
+      showToast(`☁️ ${ok} data berhasil disinkron ke Peta Pantau.`);
+      if(currentCategory){
+        if(currentTab === 'list') renderList();
+      }
+    }
+  } finally {
+    cloudRetryRunning = false;
+  }
+}
+
+/* ==========================================================================
    DAFTAR DATA (LIST)
    ========================================================================== */
 let listObjectUrls = [];
@@ -788,6 +877,7 @@ async function renderList(){
 async function onDeleteEntry(id){
   if(!confirm('Hapus foto ini beserta datanya? Tindakan tidak bisa dibatalkan.')) return;
   await deleteEntry(id);
+  deleteEntryFromCloud(id);
   showToast('Data dihapus.');
   renderList();
   refreshMenuBadge(currentCategory);
@@ -831,6 +921,9 @@ async function saveEditOverlay(){
     addressManual: document.getElementById('editAddrManual').value.trim(),
     note: document.getElementById('editNote').value.trim()
   });
+  const fresh = await getEntry(editingId);
+  const synced = await syncEntryToCloud(editingId, fresh);
+  await updateEntry(editingId, { cloudPending: !synced });
   showToast('Perubahan disimpan.');
   closeEditOverlay();
   renderList();
@@ -919,6 +1012,17 @@ function renderMenu(){
     card.addEventListener('click', () => goToCategory(cat.id));
     grid.appendChild(card);
   });
+
+  const pantauCard = document.createElement('div');
+  pantauCard.className = 'menu-card menu-card-pantau';
+  pantauCard.innerHTML = `
+    <div class="ic">🛰️</div>
+    <div class="lbl">Peta Pantau</div>
+    <div class="sub"><span class="live-dot"></span>Lihat semua titik (publik, real-time)</div>
+  `;
+  pantauCard.addEventListener('click', () => { window.location.href = 'peta-pantau.html'; });
+  grid.appendChild(pantauCard);
+
   CATEGORIES.forEach(cat => refreshMenuBadge(cat.id));
 }
 
@@ -970,6 +1074,7 @@ window.addEventListener('DOMContentLoaded', () => {
  try{
   renderMenu();
   retryPendingGeocodes();
+  retryPendingCloudSync();
 
   document.getElementById('btnCamera').addEventListener('click', () => document.getElementById('inputCamera').click());
   document.getElementById('btnImport').addEventListener('click', () => document.getElementById('inputImport').click());
@@ -1030,6 +1135,8 @@ window.addEventListener('DOMContentLoaded', () => {
    selama aplikasi terbuka (jaga-jaga di browser yang event 'online'-nya kurang responsif). */
 window.addEventListener('online', retryPendingGeocodes);
 setInterval(retryPendingGeocodes, 45000);
+window.addEventListener('online', retryPendingCloudSync);
+setInterval(retryPendingCloudSync, 45000);
 
 /* ============ SERVICE WORKER ============ */
 if('serviceWorker' in navigator){

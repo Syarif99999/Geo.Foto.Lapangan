@@ -1,10 +1,14 @@
 // Geo Foto Lapangan - Service Worker
-const CACHE_NAME = 'geo-foto-lapangan-v5';
+const CACHE_NAME = 'geo-foto-lapangan-v6';
 const APP_SHELL = [
   './index.html',
   './manifest.json',
   './icon-192.png',
-  './icon-512.png'
+  './icon-512.png',
+  './app.js',
+  './peta-pantau.html',
+  './pantau.js',
+  './firebase-config.js'
 ];
 
 self.addEventListener('install', (event) => {
