@@ -15,12 +15,12 @@
    ========================================================================== */
 
 const FIREBASE_CONFIG = {
-  apiKey: "PASTE_API_KEY_DI_SINI",
-  authDomain: "PASTE_AUTH_DOMAIN_DI_SINI",
-  projectId: "PASTE_PROJECT_ID_DI_SINI",
-  storageBucket: "PASTE_STORAGE_BUCKET_DI_SINI",
-  messagingSenderId: "PASTE_SENDER_ID_DI_SINI",
-  appId: "PASTE_APP_ID_DI_SINI"
+  apiKey: "AIzaSyCA2SNhPs3SvlqX9MxW8pnVVbLmLHSJM3Q",
+  authDomain: "geo-foto-lapangan.firebaseapp.com",
+  projectId: "geo-foto-lapangan",
+  storageBucket: "geo-foto-lapangan.firebasestorage.app",
+  messagingSenderId: "1044428924844",
+  appId: "1:1044428924844:web:808a6a683e3d2f81563c09"
 };
 
 // Nama koleksi Firestore tempat semua data foto lapangan disimpan untuk Peta Pantau publik.

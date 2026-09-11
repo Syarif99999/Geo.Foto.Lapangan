@@ -666,7 +666,7 @@ async function onSaveDraft(){
   const localId = await addEntry(entry);
   showToast('Foto tersimpan ✅');
   const synced = await syncEntryToCloud(localId, entry);
-  if(!synced) await updateEntry(localId, { cloudPending:true });
+  await updateEntry(localId, { cloudSynced: synced });
   qIndex++;
   processQueueItem();
   refreshMenuBadge(currentCategory);
@@ -762,10 +762,12 @@ function blobToDataURL(blob){
 }
 
 // Mengirim satu entri ke Firestore supaya muncul di Peta Pantau publik.
-// Mengembalikan true kalau berhasil (atau kalau fitur cloud memang belum diaktifkan),
-// false kalau gagal (akan dicoba ulang otomatis nanti).
+// Mengembalikan true HANYA kalau benar-benar berhasil terkirim ke cloud.
+// Kalau fitur cloud belum aktif (config belum diisi) atau gagal karena offline,
+// selalu kembalikan false supaya entri ini otomatis dicoba lagi nanti
+// begitu Firebase aktif / koneksi kembali ada.
 async function syncEntryToCloud(localId, entry){
-  if(!firebaseReady) return true;
+  if(!firebaseReady) return false;
   try{
     const thumbDataUrl = await blobToDataURL(entry.thumbBlob);
     await firestoreDB.collection(FIRESTORE_COLLECTION).doc(String(localId)).set({
@@ -797,13 +799,15 @@ async function retryPendingCloudSync(){
   cloudRetryRunning = true;
   try{
     const all = await getAllEntries();
-    const pending = all.filter(en => en.cloudPending);
+    // cloudSynced !== true mencakup entri lama yang dibuat SEBELUM Firebase
+    // diaktifkan sekalipun (field-nya belum pernah ada sama sekali).
+    const pending = all.filter(en => en.cloudSynced !== true);
     if(pending.length === 0) return;
     let ok = 0;
     for(const en of pending){
       if(!navigator.onLine) break;
       const success = await syncEntryToCloud(en.id, en);
-      if(success){ await updateEntry(en.id, { cloudPending:false }); ok++; }
+      if(success){ await updateEntry(en.id, { cloudSynced:true }); ok++; }
     }
     if(ok > 0){
       showToast(`☁️ ${ok} data berhasil disinkron ke Peta Pantau.`);
@@ -846,6 +850,7 @@ async function renderList(){
         <div class="entry-addr">${escapeHtml(addr)}</div>
         <div class="entry-meta">📍 ${en.lat.toFixed(5)}, ${en.lng.toFixed(5)} &middot; ${fmtDate(en.timestamp)}</div>
         ${en.geocodePending ? `<div class="entry-pending">⏳ Alamat otomatis menunggu koneksi internet</div>` : ''}
+        ${en.cloudSynced === false ? `<div class="entry-pending">☁️ Menunggu disinkron ke Peta Pantau</div>` : ''}
         ${en.note ? `<div class="entry-note">"${escapeHtml(en.note)}"</div>` : ''}
         <div class="entry-actions">
           <button class="mini-act" data-act="edit" data-id="${en.id}">✏️ Edit</button>
@@ -923,7 +928,7 @@ async function saveEditOverlay(){
   });
   const fresh = await getEntry(editingId);
   const synced = await syncEntryToCloud(editingId, fresh);
-  await updateEntry(editingId, { cloudPending: !synced });
+  await updateEntry(editingId, { cloudSynced: synced });
   showToast('Perubahan disimpan.');
   closeEditOverlay();
   renderList();

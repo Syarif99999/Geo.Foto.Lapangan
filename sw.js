@@ -1,5 +1,5 @@
 // Geo Foto Lapangan - Service Worker
-const CACHE_NAME = 'geo-foto-lapangan-v6';
+const CACHE_NAME = 'geo-foto-lapangan-v7';
 const APP_SHELL = [
   './index.html',
   './manifest.json',
