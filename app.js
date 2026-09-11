@@ -447,10 +447,12 @@ let queue = [];
 let qIndex = 0;
 let currentDraft = null;
 let geocodeDebounce = null;
+let lastSavedEntryId = null;
 
 function startQueue(fileList, source){
   queue = Array.from(fileList).map(f => ({ file:f, source }));
   qIndex = 0;
+  document.getElementById('lastSavedBar').style.display = 'none';
   document.getElementById('reviewPanel').style.display = 'block';
   document.getElementById('reviewPanel').scrollIntoView({ behavior:'smooth', block:'start' });
   processQueueItem();
@@ -665,6 +667,8 @@ async function onSaveDraft(){
   };
   const localId = await addEntry(entry);
   showToast('Foto tersimpan ✅');
+  lastSavedEntryId = localId;
+  document.getElementById('lastSavedBar').style.display = 'flex';
   const synced = await syncEntryToCloud(localId, entry);
   const changes = { cloudSynced: synced };
   if(synced) changes.cloudDocId = String(localId);
@@ -894,6 +898,125 @@ async function restoreFromCloud(){
 }
 
 /* ==========================================================================
+   STEMPEL KOORDINAT PADA FOTO & BAGIKAN (WA/Grup)
+   ========================================================================== */
+function wrapText(ctx, text, maxWidth){
+  const words = String(text).split(' ');
+  const lines = [];
+  let current = '';
+  for(const w of words){
+    const test = current ? current + ' ' + w : w;
+    if(ctx.measureText(test).width > maxWidth && current){
+      lines.push(current);
+      current = w;
+    } else {
+      current = test;
+    }
+  }
+  if(current) lines.push(current);
+  return lines;
+}
+
+async function generateStampedPhoto(entry){
+  const img = await new Promise((resolve, reject) => {
+    const image = new Image();
+    const url = URL.createObjectURL(entry.photoBlob);
+    image.onload = () => { resolve(image); };
+    image.onerror = reject;
+    image.src = url;
+  });
+
+  const W = img.naturalWidth || img.width;
+  const H = img.naturalHeight || img.height;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, W, H);
+  URL.revokeObjectURL(img.src);
+
+  const address = entry.addressManual || entry.addressAuto || '';
+  const businessName = entry.businessName || '';
+  const catText = catLabel(entry.category);
+  const coordText = `${entry.lat.toFixed(6)}, ${entry.lng.toFixed(6)}`;
+  const dateText = fmtDate(entry.timestamp);
+  const titleLine = businessName ? `${businessName} — ${catText}` : catText;
+
+  const pad = Math.round(W * 0.035);
+  const fsBig = Math.max(16, Math.round(W * 0.036));
+  const fsMed = Math.max(13, Math.round(W * 0.027));
+  const fsSmall = Math.max(11, Math.round(W * 0.020));
+  const lineSpacing = 1.35;
+
+  ctx.font = `${fsMed}px sans-serif`;
+  const addrLines = address ? wrapText(ctx, address, W - pad*2) : [];
+
+  const lines = [
+    { text: titleLine, font:`bold ${fsMed}px sans-serif`, size:fsMed, color:'#ffffff' }
+  ];
+  addrLines.slice(0,2).forEach(l => lines.push({ text:l, font:`${fsMed}px sans-serif`, size:fsMed, color:'#e6e6e6' }));
+  lines.push({ text:`📍 ${coordText}`, font:`bold ${fsBig}px monospace`, size:fsBig, color:'#e0b354' });
+  lines.push({ text:dateText, font:`${fsSmall}px sans-serif`, size:fsSmall, color:'#cfcfcf' });
+
+  let bandHeight = pad * 1.7;
+  lines.forEach(l => bandHeight += l.size * lineSpacing);
+
+  const bandTop = H - bandHeight;
+  const grad = ctx.createLinearGradient(0, bandTop - 50, 0, H);
+  grad.addColorStop(0, 'rgba(15,38,71,0)');
+  grad.addColorStop(1, 'rgba(15,38,71,0.9)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, bandTop - 50, W, H - (bandTop - 50));
+
+  let y = bandTop + pad * 0.75;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  lines.forEach(l => {
+    ctx.font = l.font;
+    ctx.fillStyle = l.color;
+    ctx.fillText(l.text, pad, y);
+    y += l.size * lineSpacing;
+  });
+
+  ctx.font = `${fsSmall}px sans-serif`;
+  ctx.textAlign = 'right';
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.shadowColor = 'rgba(0,0,0,0.6)';
+  ctx.shadowBlur = 4;
+  ctx.fillText('GeoFoto Lapangan · BAPENDA Paser', W - pad, pad * 0.6);
+  ctx.shadowBlur = 0;
+
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.88));
+}
+
+async function shareEntry(id){
+  const entry = await getEntry(id);
+  if(!entry){ showToast('Data tidak ditemukan.'); return; }
+  showToast('Menyiapkan foto berkoordinat...');
+  try{
+    const stampedBlob = await generateStampedPhoto(entry);
+    const safeName = (entry.businessName || catLabel(entry.category)).replace(/[^a-z0-9]+/gi, '_');
+    const fileName = `GeoFoto_${safeName}_${new Date(entry.timestamp).toISOString().slice(0,10)}.jpg`;
+    const file = new File([stampedBlob], fileName, { type:'image/jpeg' });
+    const shareText = `${entry.businessName ? entry.businessName + ' — ' : ''}${catLabel(entry.category)}\n${entry.addressManual || entry.addressAuto || ''}\n📍 ${entry.lat.toFixed(6)}, ${entry.lng.toFixed(6)}`;
+
+    if(navigator.canShare && navigator.canShare({ files:[file] })){
+      await navigator.share({ files:[file], title: entry.businessName || catLabel(entry.category), text: shareText });
+    } else {
+      const url = URL.createObjectURL(stampedBlob);
+      const a = document.createElement('a');
+      a.href = url; a.download = fileName;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      showToast('Foto berkoordinat sudah diunduh — lampirkan manual ke WhatsApp.');
+    }
+  }catch(e){
+    if(e && e.name === 'AbortError') return; // dibatalkan user, tidak perlu tampilkan error
+    console.error('Gagal membagikan foto:', e);
+    showToast('Gagal menyiapkan foto untuk dibagikan.');
+  }
+}
+
+/* ==========================================================================
    DAFTAR DATA (LIST)
    ========================================================================== */
 let listObjectUrls = [];
@@ -926,6 +1049,7 @@ async function renderList(){
         ${en.cloudSynced === false ? `<div class="entry-pending">☁️ Menunggu disinkron ke Peta Pantau</div>` : ''}
         ${en.note ? `<div class="entry-note">"${escapeHtml(en.note)}"</div>` : ''}
         <div class="entry-actions">
+          <button class="mini-act" data-act="share" data-id="${en.id}">📤 Bagikan</button>
           <button class="mini-act" data-act="edit" data-id="${en.id}">✏️ Edit</button>
           <button class="mini-act" data-act="maps" data-id="${en.id}">🗺️ Google Maps</button>
           <button class="mini-act danger" data-act="delete" data-id="${en.id}">🗑️ Hapus</button>
@@ -937,6 +1061,9 @@ async function renderList(){
 
   container.querySelectorAll('.entry-thumb').forEach(img => {
     img.addEventListener('click', () => openPhotoOverlay(parseInt(img.dataset.id, 10)));
+  });
+  container.querySelectorAll('[data-act="share"]').forEach(btn => {
+    btn.addEventListener('click', () => shareEntry(parseInt(btn.dataset.id, 10)));
   });
   container.querySelectorAll('[data-act="edit"]').forEach(btn => {
     btn.addEventListener('click', () => openEditOverlay(parseInt(btn.dataset.id, 10)));
@@ -1123,6 +1250,8 @@ function goToCategory(catId){
   document.getElementById('catTitle').textContent = catLabel(catId);
   document.getElementById('viewMenu').style.display = 'none';
   document.getElementById('viewCategory').style.display = 'block';
+  document.getElementById('lastSavedBar').style.display = 'none';
+  lastSavedEntryId = null;
   onCancelQueue();
   switchTab('capture');
   window.scrollTo({ top:0, behavior:'smooth' });
@@ -1192,6 +1321,9 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnExportExcel').addEventListener('click', exportExcel);
   document.getElementById('btnExportZip').addEventListener('click', exportZip);
   document.getElementById('btnRestoreCloud').addEventListener('click', restoreFromCloud);
+  document.getElementById('btnShareLastSaved').addEventListener('click', () => {
+    if(lastSavedEntryId != null) shareEntry(lastSavedEntryId);
+  });
 
   document.getElementById('businessNameInput').addEventListener('input', (e) => {
     if(reviewMarker) reviewMarker.setIcon(pinDivIcon('#c8952c', e.target.value));

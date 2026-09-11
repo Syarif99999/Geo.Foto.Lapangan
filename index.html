@@ -112,6 +112,8 @@
   .cap-btn.alt{background:#fff;color:var(--navy);border:1.5px solid var(--navy);}
   .cap-btn .emj{font-size:1.6rem;}
   .hint{font-size:.72rem;color:#7a8494;background:#fff;border:1px dashed var(--line);border-radius:10px;padding:10px 12px;margin:0 0 14px 0;line-height:1.5;}
+  .last-saved-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#eaf3ee;border:1px solid #cfe6da;color:var(--green);font-size:.78rem;font-weight:700;padding:11px 13px;border-radius:10px;margin:0 0 14px 0;flex-wrap:wrap;}
+  .last-saved-bar button{background:var(--green);color:#fff;border:none;border-radius:8px;padding:8px 13px;font-size:.74rem;font-weight:700;cursor:pointer;white-space:nowrap;}
 
   .review-panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;margin-top:6px;}
   .review-progress{font-size:.72rem;font-weight:700;color:var(--gold);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;}
@@ -271,6 +273,11 @@
       <input type="file" id="inputCamera" accept="image/*" capture="environment" hidden>
       <input type="file" id="inputImport" accept="image/*" multiple hidden>
       <div class="hint">📌 Foto langsung otomatis mengunci koordinat GPS saat itu juga. Foto impor akan dibaca data GPS dari EXIF bila tersedia (foto asli kamera biasanya punya, foto kiriman WhatsApp biasanya sudah terhapus GPS-nya) — jika tidak ditemukan, tandai lokasi manual di peta atau pakai tombol "Gunakan Lokasi Saat Ini".</div>
+
+      <div class="last-saved-bar" id="lastSavedBar" style="display:none;">
+        <span>✅ Foto tersimpan dengan koordinat</span>
+        <button type="button" id="btnShareLastSaved">📤 Bagikan ke WA/Grup</button>
+      </div>
 
       <div class="review-panel" id="reviewPanel" style="display:none;">
         <div class="review-progress" id="reviewProgress"></div>
