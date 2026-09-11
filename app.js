@@ -942,10 +942,10 @@ async function generateStampedPhoto(entry){
   const titleLine = businessName ? `${businessName} — ${catText}` : catText;
 
   const pad = Math.round(W * 0.035);
-  const fsBig = Math.max(16, Math.round(W * 0.036));
-  const fsMed = Math.max(13, Math.round(W * 0.027));
-  const fsSmall = Math.max(11, Math.round(W * 0.020));
-  const lineSpacing = 1.35;
+  const fsBig = Math.max(20, Math.round(W * 0.05));
+  const fsMed = Math.max(16, Math.round(W * 0.036));
+  const fsSmall = Math.max(13, Math.round(W * 0.026));
+  const lineSpacing = 1.4;
 
   ctx.font = `${fsMed}px sans-serif`;
   const addrLines = address ? wrapText(ctx, address, W - pad*2) : [];
