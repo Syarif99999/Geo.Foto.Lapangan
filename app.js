@@ -666,7 +666,9 @@ async function onSaveDraft(){
   const localId = await addEntry(entry);
   showToast('Foto tersimpan ✅');
   const synced = await syncEntryToCloud(localId, entry);
-  await updateEntry(localId, { cloudSynced: synced });
+  const changes = { cloudSynced: synced };
+  if(synced) changes.cloudDocId = String(localId);
+  await updateEntry(localId, changes);
   qIndex++;
   processQueueItem();
   refreshMenuBadge(currentCategory);
@@ -807,7 +809,7 @@ async function retryPendingCloudSync(){
     for(const en of pending){
       if(!navigator.onLine) break;
       const success = await syncEntryToCloud(en.id, en);
-      if(success){ await updateEntry(en.id, { cloudSynced:true }); ok++; }
+      if(success){ await updateEntry(en.id, { cloudSynced:true, cloudDocId:String(en.id) }); ok++; }
     }
     if(ok > 0){
       showToast(`☁️ ${ok} data berhasil disinkron ke Peta Pantau.`);
@@ -817,6 +819,77 @@ async function retryPendingCloudSync(){
     }
   } finally {
     cloudRetryRunning = false;
+  }
+}
+
+/* ==========================================================================
+   PULIHKAN DATA DARI CLOUD (kalau data lokal hilang / diambil HP lain)
+   ========================================================================== */
+function dataURLToBlob(dataUrl){
+  const parts = dataUrl.split(',');
+  const mimeMatch = parts[0].match(/data:(.*?);base64/);
+  const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+  const binary = atob(parts[1]);
+  const arr = new Uint8Array(binary.length);
+  for(let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+async function restoreFromCloud(){
+  if(!firebaseReady){ showToast('Fitur cloud belum aktif (cek firebase-config.js).'); return; }
+  if(!navigator.onLine){ showToast('Perlu koneksi internet untuk memulihkan data.'); return; }
+
+  const btn = document.getElementById('btnRestoreCloud');
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = '🔄 Memeriksa cloud...';
+
+  try{
+    const snapshot = await firestoreDB.collection(FIRESTORE_COLLECTION)
+      .where('category', '==', currentCategory).get();
+
+    const localEntries = await getEntriesByCategory(currentCategory);
+    const existingCloudIds = new Set(localEntries.map(e => e.cloudDocId).filter(Boolean));
+
+    let restored = 0;
+    for(const doc of snapshot.docs){
+      if(existingCloudIds.has(doc.id)) continue; // sudah ada di HP ini
+      const d = doc.data();
+      let blob;
+      try{ blob = dataURLToBlob(d.thumbDataUrl); }catch(e){ continue; }
+
+      const entry = {
+        category: d.category || currentCategory,
+        businessName: d.businessName || '',
+        lat: d.lat, lng: d.lng,
+        coordSource: 'Dipulihkan dari cloud',
+        addressAuto: d.address || '',
+        addressManual: d.address || '',
+        note: d.note || '',
+        timestamp: d.timestamp || Date.now(),
+        photoBlob: blob,
+        thumbBlob: blob,
+        fileName: `cloud_${doc.id}.jpg`,
+        cloudSynced: true,
+        cloudDocId: doc.id
+      };
+      await addEntry(entry);
+      restored++;
+    }
+
+    if(restored > 0){
+      showToast(`🔄 ${restored} data berhasil dipulihkan dari cloud.`);
+      renderList();
+      refreshMenuBadge(currentCategory);
+    } else {
+      showToast('Data di HP ini sudah lengkap, tidak ada yang perlu dipulihkan.');
+    }
+  }catch(e){
+    console.error('Gagal memulihkan dari cloud:', e);
+    showToast('Gagal memulihkan data. Cek koneksi internet & Firestore Rules.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
   }
 }
 
@@ -928,7 +1001,9 @@ async function saveEditOverlay(){
   });
   const fresh = await getEntry(editingId);
   const synced = await syncEntryToCloud(editingId, fresh);
-  await updateEntry(editingId, { cloudSynced: synced });
+  const changes = { cloudSynced: synced };
+  if(synced) changes.cloudDocId = String(editingId);
+  await updateEntry(editingId, changes);
   showToast('Perubahan disimpan.');
   closeEditOverlay();
   renderList();
@@ -1116,6 +1191,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btnExportExcel').addEventListener('click', exportExcel);
   document.getElementById('btnExportZip').addEventListener('click', exportZip);
+  document.getElementById('btnRestoreCloud').addEventListener('click', restoreFromCloud);
 
   document.getElementById('businessNameInput').addEventListener('input', (e) => {
     if(reviewMarker) reviewMarker.setIcon(pinDivIcon('#c8952c', e.target.value));
