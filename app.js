@@ -1181,8 +1181,13 @@ async function renderList(){
 
 async function onDeleteEntry(id){
   if(!confirm('Hapus foto ini beserta datanya? Tindakan tidak bisa dibatalkan.')) return;
+  const entry = await getEntry(id);
   await deleteEntry(id);
-  deleteEntryFromCloud(id);
+  // Penting: hapus dari cloud pakai cloudDocId (bukan id lokal), karena untuk data
+  // hasil "Pulihkan dari Cloud", id lokal berbeda dengan id dokumen di Firestore.
+  // Kalau ini keliru, data yang dihapus bisa "muncul lagi" saat Pulihkan dari Cloud ditekan lagi.
+  const cloudId = (entry && entry.cloudDocId) ? entry.cloudDocId : String(id);
+  deleteEntryFromCloud(cloudId);
   showToast('Data dihapus.');
   renderList();
   refreshMenuBadge(currentCategory);

@@ -102,7 +102,7 @@ function renderFilterBar(){
     const chip = document.createElement('div');
     chip.className = 'chip active';
     chip.dataset.id = id;
-    chip.innerHTML = `<span class="dot" style="background:${meta.color};"></span>${meta.icon} ${meta.label}`;
+    chip.innerHTML = `<span class="dot" style="background:${meta.color};"></span>${meta.icon} ${meta.label} <span class="chip-count" id="count-${id}">0</span>`;
     chip.addEventListener('click', () => {
       if(activeFilters.has(id)){ activeFilters.delete(id); chip.classList.remove('active'); }
       else { activeFilters.add(id); chip.classList.add('active'); }
@@ -110,6 +110,16 @@ function renderFilterBar(){
       renderList();
     });
     bar.appendChild(chip);
+  });
+}
+
+function updateFilterCounts(){
+  const counts = {};
+  Object.keys(CATEGORY_META).forEach(id => { counts[id] = 0; });
+  Object.values(allDocs).forEach(d => { if(counts[d.category] != null) counts[d.category]++; });
+  Object.keys(CATEGORY_META).forEach(id => {
+    const el = document.getElementById(`count-${id}`);
+    if(el) el.textContent = counts[id];
   });
 }
 
@@ -188,6 +198,7 @@ function startListening(){
       renderMarkers();
       renderList();
       updateStats();
+      updateFilterCounts();
     }, (err) => {
       console.error('Firestore error:', err);
       document.getElementById('statUpdated').textContent = 'Gagal memuat data cloud (cek koneksi / rules Firestore)';
