@@ -768,15 +768,14 @@ function blobToDataURL(blob){
 }
 
 // Mengirim satu entri ke Firestore supaya muncul di Peta Pantau publik.
+// docId = ID dokumen Firestore yang harus dipakai/dipertahankan (BUKAN selalu id lokal —
+// untuk data hasil "Pulihkan dari Cloud", id lokal dan id dokumen cloud itu BEDA).
 // Mengembalikan true HANYA kalau benar-benar berhasil terkirim ke cloud.
-// Kalau fitur cloud belum aktif (config belum diisi) atau gagal karena offline,
-// selalu kembalikan false supaya entri ini otomatis dicoba lagi nanti
-// begitu Firebase aktif / koneksi kembali ada.
-async function syncEntryToCloud(localId, entry){
+async function syncEntryToCloud(docId, entry){
   if(!firebaseReady) return false;
   try{
     const thumbDataUrl = await blobToDataURL(entry.thumbBlob);
-    await firestoreDB.collection(FIRESTORE_COLLECTION).doc(String(localId)).set({
+    await firestoreDB.collection(FIRESTORE_COLLECTION).doc(String(docId)).set({
       category: entry.category,
       businessName: entry.businessName || '',
       lat: entry.lat,
@@ -793,9 +792,9 @@ async function syncEntryToCloud(localId, entry){
   }
 }
 
-async function deleteEntryFromCloud(localId){
+async function deleteEntryFromCloud(docId){
   if(!firebaseReady) return;
-  try{ await firestoreDB.collection(FIRESTORE_COLLECTION).doc(String(localId)).delete(); }
+  try{ await firestoreDB.collection(FIRESTORE_COLLECTION).doc(String(docId)).delete(); }
   catch(e){ console.warn('Gagal hapus dari cloud:', e); }
 }
 
@@ -812,8 +811,9 @@ async function retryPendingCloudSync(){
     let ok = 0;
     for(const en of pending){
       if(!navigator.onLine) break;
-      const success = await syncEntryToCloud(en.id, en);
-      if(success){ await updateEntry(en.id, { cloudSynced:true, cloudDocId:String(en.id) }); ok++; }
+      const docId = en.cloudDocId || String(en.id);
+      const success = await syncEntryToCloud(docId, en);
+      if(success){ await updateEntry(en.id, { cloudSynced:true, cloudDocId:docId }); ok++; }
     }
     if(ok > 0){
       showToast(`☁️ ${ok} data berhasil disinkron ke Peta Pantau.`);
@@ -1232,9 +1232,12 @@ async function saveEditOverlay(){
     note: document.getElementById('editNote').value.trim()
   });
   const fresh = await getEntry(editingId);
-  const synced = await syncEntryToCloud(editingId, fresh);
+  // Pakai cloudDocId yang SUDAH ADA kalau ini data hasil pulihan dari cloud —
+  // supaya update menimpa dokumen yang sama, bukan bikin dokumen baru di cloud.
+  const docId = fresh.cloudDocId || String(editingId);
+  const synced = await syncEntryToCloud(docId, fresh);
   const changes = { cloudSynced: synced };
-  if(synced) changes.cloudDocId = String(editingId);
+  if(synced) changes.cloudDocId = docId;
   await updateEntry(editingId, changes);
   showToast('Perubahan disimpan.');
   closeEditOverlay();
