@@ -826,6 +826,52 @@ async function retryPendingCloudSync(){
   }
 }
 
+async function onBatchShare(){
+  if(selectedIds.size === 0){ showToast('Pilih minimal 1 foto dulu.'); return; }
+  if(selectedIds.size > 10){ showToast('Maksimal 10 foto sekaligus untuk satu kali bagikan.'); return; }
+
+  showToast(`Menyiapkan ${selectedIds.size} foto berkoordinat...`);
+  const btn = document.getElementById('btnBatchShare');
+  btn.disabled = true;
+
+  try{
+    const files = [];
+    for(const id of selectedIds){
+      const entry = await getEntry(id);
+      if(!entry) continue;
+      const stampedBlob = await generateStampedPhoto(entry);
+      const safeName = (entry.businessName || catLabel(entry.category)).replace(/[^a-z0-9]+/gi, '_');
+      const fileName = `GeoFoto_${safeName}_${new Date(entry.timestamp).toISOString().slice(0,10)}_${id}.jpg`;
+      files.push(new File([stampedBlob], fileName, { type:'image/jpeg' }));
+      const newCount = (entry.shareCount || 0) + 1;
+      await updateEntry(id, { shareCount: newCount, lastSharedAt: Date.now() });
+    }
+
+    if(files.length === 0){ showToast('Tidak ada foto valid untuk dibagikan.'); return; }
+
+    if(navigator.canShare && navigator.canShare({ files })){
+      await navigator.share({ files });
+    } else {
+      for(const f of files){
+        const url = URL.createObjectURL(f);
+        const a = document.createElement('a');
+        a.href = url; a.download = f.name;
+        document.body.appendChild(a); a.click(); a.remove();
+        await new Promise(r => setTimeout(r, 300));
+        URL.revokeObjectURL(url);
+      }
+      showToast(`${files.length} foto sudah diunduh — lampirkan manual ke WhatsApp.`);
+    }
+
+    toggleBatchMode();
+  }catch(e){
+    if(e && e.name === 'AbortError'){ /* dibatalkan user */ }
+    else { console.error('Gagal bagikan banyak foto:', e); showToast('Gagal menyiapkan foto untuk dibagikan.'); }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /* ==========================================================================
    PULIHKAN DATA DARI CLOUD (kalau data lokal hilang / diambil HP lain)
    ========================================================================== */
@@ -1098,9 +1144,11 @@ async function shareEntry(id){
     const safeName = (entry.businessName || catLabel(entry.category)).replace(/[^a-z0-9]+/gi, '_');
     const fileName = `GeoFoto_${safeName}_${new Date(entry.timestamp).toISOString().slice(0,10)}.jpg`;
     const file = new File([stampedBlob], fileName, { type:'image/jpeg' });
+    let shared = false;
 
     if(navigator.canShare && navigator.canShare({ files:[file] })){
       await navigator.share({ files:[file] });
+      shared = true;
     } else {
       const url = URL.createObjectURL(stampedBlob);
       const a = document.createElement('a');
@@ -1108,6 +1156,13 @@ async function shareEntry(id){
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
       showToast('Foto berkoordinat sudah diunduh — lampirkan manual ke WhatsApp.');
+      shared = true;
+    }
+
+    if(shared){
+      const newCount = (entry.shareCount || 0) + 1;
+      await updateEntry(id, { shareCount: newCount, lastSharedAt: Date.now() });
+      if(currentTab === 'list') renderList();
     }
   }catch(e){
     if(e && e.name === 'AbortError') return; // dibatalkan user, tidak perlu tampilkan error
@@ -1117,9 +1172,26 @@ async function shareEntry(id){
 }
 
 /* ==========================================================================
-   DAFTAR DATA (LIST)
+   DAFTAR DATA (LIST) + MODE PILIH BANYAK (BAGIKAN SEKALIGUS)
    ========================================================================== */
 let listObjectUrls = [];
+let batchMode = false;
+let selectedIds = new Set();
+
+function toggleBatchMode(){
+  batchMode = !batchMode;
+  selectedIds.clear();
+  document.getElementById('btnBatchMode').textContent = batchMode ? '✕ Batal Pilih' : '☑️ Pilih Banyak';
+  document.getElementById('batchBar').style.display = batchMode ? 'flex' : 'none';
+  document.getElementById('entryList').style.paddingBottom = batchMode ? '80px' : '0';
+  updateBatchBar();
+  renderList();
+}
+
+function updateBatchBar(){
+  document.getElementById('batchCount').textContent = `${selectedIds.size} dipilih`;
+}
+
 async function renderList(){
   listObjectUrls.forEach(u => URL.revokeObjectURL(u));
   listObjectUrls = [];
@@ -1137,27 +1209,53 @@ async function renderList(){
     const thumbUrl = URL.createObjectURL(en.thumbBlob);
     listObjectUrls.push(thumbUrl);
     const addr = en.addressManual || en.addressAuto || '(alamat belum diisi)';
+    const isSelected = selectedIds.has(en.id);
     const card = document.createElement('div');
-    card.className = 'entry-card';
+    card.className = 'entry-card' + (isSelected ? ' selected' : '');
     card.innerHTML = `
+      ${batchMode ? `<input type="checkbox" class="entry-checkbox" data-id="${en.id}" ${isSelected ? 'checked' : ''}>` : ''}
       <img class="entry-thumb" src="${thumbUrl}" data-id="${en.id}" alt="Foto">
       <div class="entry-body">
         ${en.businessName ? `<div class="entry-business">${escapeHtml(en.businessName)}</div>` : ''}
         <div class="entry-addr">${escapeHtml(addr)}</div>
+        ${en.shareCount > 1 ? `<div class="entry-share-warn">⚠️ Sudah dikirim ${en.shareCount}x ke WA — cek jangan dobel</div>` : (en.shareCount === 1 ? `<div class="entry-share-ok">✅ Sudah dikirim ke WA</div>` : '')}
         <div class="entry-meta">📍 ${en.lat.toFixed(5)}, ${en.lng.toFixed(5)} &middot; ${fmtDate(en.timestamp)}</div>
         ${en.geocodePending ? `<div class="entry-pending">⏳ Alamat otomatis menunggu koneksi internet</div>` : ''}
         ${en.cloudSynced === false ? `<div class="entry-pending">☁️ Menunggu disinkron ke Peta Pantau</div>` : ''}
         ${en.note ? `<div class="entry-note">"${escapeHtml(en.note)}"</div>` : ''}
+        ${!batchMode ? `
         <div class="entry-actions">
           <button class="mini-act" data-act="share" data-id="${en.id}">📤 Bagikan</button>
           <button class="mini-act" data-act="edit" data-id="${en.id}">✏️ Edit</button>
           <button class="mini-act" data-act="maps" data-id="${en.id}">🗺️ Google Maps</button>
           <button class="mini-act danger" data-act="delete" data-id="${en.id}">🗑️ Hapus</button>
-        </div>
+        </div>` : ''}
       </div>
     `;
     container.appendChild(card);
   });
+
+  if(batchMode){
+    const toggleSelect = (id) => {
+      if(selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
+      updateBatchBar();
+      renderList();
+    };
+    container.querySelectorAll('.entry-checkbox').forEach(cb => {
+      cb.addEventListener('click', (e) => { e.stopPropagation(); toggleSelect(parseInt(cb.dataset.id, 10)); });
+    });
+    container.querySelectorAll('.entry-thumb').forEach(img => {
+      img.addEventListener('click', () => toggleSelect(parseInt(img.dataset.id, 10)));
+    });
+    container.querySelectorAll('.entry-card').forEach(card => {
+      card.addEventListener('click', (e) => {
+        if(e.target.closest('.entry-thumb') || e.target.closest('.entry-checkbox')) return;
+        const id = parseInt(card.querySelector('.entry-checkbox').dataset.id, 10);
+        toggleSelect(id);
+      });
+    });
+    return;
+  }
 
   container.querySelectorAll('.entry-thumb').forEach(img => {
     img.addEventListener('click', () => openPhotoOverlay(parseInt(img.dataset.id, 10)));
@@ -1360,6 +1458,10 @@ function goToCategory(catId){
   document.getElementById('viewCategory').style.display = 'block';
   document.getElementById('lastSavedBar').style.display = 'none';
   lastSavedEntryId = null;
+  batchMode = false;
+  selectedIds.clear();
+  document.getElementById('batchBar').style.display = 'none';
+  document.getElementById('btnBatchMode').textContent = '☑️ Pilih Banyak';
   onCancelQueue();
   switchTab('capture');
   window.scrollTo({ top:0, behavior:'smooth' });
@@ -1429,6 +1531,9 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnExportExcel').addEventListener('click', exportExcel);
   document.getElementById('btnExportZip').addEventListener('click', exportZip);
   document.getElementById('btnRestoreCloud').addEventListener('click', restoreFromCloud);
+  document.getElementById('btnBatchMode').addEventListener('click', toggleBatchMode);
+  document.getElementById('btnBatchShare').addEventListener('click', onBatchShare);
+  document.getElementById('btnBatchCancel').addEventListener('click', toggleBatchMode);
   document.getElementById('btnShareLastSaved').addEventListener('click', () => {
     if(lastSavedEntryId != null) shareEntry(lastSavedEntryId);
   });
