@@ -1057,6 +1057,16 @@ function formatStampDate(ts){
   return `${dayName}, ${dd}/${mm}/${yyyy} ${hh}:${minutes} ${ampm} ${gmtStr}`;
 }
 
+function fitSingleLineFontSize(ctx, text, size, family, weight, maxWidth, minSize){
+  let s = size;
+  while(s > minSize){
+    ctx.font = `${weight ? weight + ' ' : ''}${s}px ${family}`;
+    if(ctx.measureText(text).width <= maxWidth) break;
+    s -= 1;
+  }
+  return s;
+}
+
 async function generateStampedPhoto(entry){
   const img = await new Promise((resolve, reject) => {
     const image = new Image();
@@ -1099,13 +1109,23 @@ async function generateStampedPhoto(entry){
   ctx.font = `${fsSub}px sans-serif`;
   const addrLines = address ? wrapText(ctx, address, textColWidth).slice(0,2) : [];
 
+  // Ukuran huruf baris satu-baris (judul, kategori, koordinat, tanggal) otomatis
+  // dikecilkan kalau teksnya kepanjangan, supaya TIDAK PERNAH kepotong di tepi foto —
+  // ini yang jadi penyebab tulisan "Long ..." kepotong pada foto sempit/alamat panjang.
+  const titleSize = fitSingleLineFontSize(ctx, regionTitle, fsTitle, 'sans-serif', 'bold', textColWidth, Math.round(fsTitle*0.55));
+  const catSize = businessName ? fitSingleLineFontSize(ctx, catText, fsSub, 'sans-serif', '', textColWidth, Math.round(fsSub*0.6)) : fsSub;
+  const coordSize = fitSingleLineFontSize(ctx, coordLine, fsCoord, 'monospace', 'bold', textColWidth, Math.round(fsCoord*0.55));
+  const dateSize = fitSingleLineFontSize(ctx, dateLine, fsSmall, 'sans-serif', '', textColWidth, Math.round(fsSmall*0.6));
+  const creditText = 'Dicatat: GeoFoto Lapangan · BAPENDA Paser';
+  const creditSize = fitSingleLineFontSize(ctx, creditText, fsTiny, 'sans-serif', '', textColWidth, Math.round(fsTiny*0.6));
+
   const textLines = [];
-  textLines.push({ text: regionTitle, font:`bold ${fsTitle}px sans-serif`, size:fsTitle, color:'#ffffff' });
-  if(businessName) textLines.push({ text: catText, font:`${fsSub}px sans-serif`, size:fsSub, color:'#cfd6e0' });
+  textLines.push({ text: regionTitle, font:`bold ${titleSize}px sans-serif`, size:titleSize, color:'#ffffff' });
+  if(businessName) textLines.push({ text: catText, font:`${catSize}px sans-serif`, size:catSize, color:'#cfd6e0' });
   addrLines.forEach(l => textLines.push({ text:l, font:`${fsSub}px sans-serif`, size:fsSub, color:'#d8dde5' }));
-  textLines.push({ text: coordLine, font:`bold ${fsCoord}px monospace`, size:fsCoord, color:'#e0b354' });
-  textLines.push({ text: dateLine, font:`${fsSmall}px sans-serif`, size:fsSmall, color:'#b8c0cc' });
-  textLines.push({ text:'Dicatat: GeoFoto Lapangan · BAPENDA Paser', font:`${fsTiny}px sans-serif`, size:fsTiny, color:'#93a0b0' });
+  textLines.push({ text: coordLine, font:`bold ${coordSize}px monospace`, size:coordSize, color:'#e0b354' });
+  textLines.push({ text: dateLine, font:`${dateSize}px sans-serif`, size:dateSize, color:'#b8c0cc' });
+  textLines.push({ text: creditText, font:`${creditSize}px sans-serif`, size:creditSize, color:'#93a0b0' });
 
   let textBlockHeight = 0;
   textLines.forEach(l => textBlockHeight += l.size * lineSpacing);
