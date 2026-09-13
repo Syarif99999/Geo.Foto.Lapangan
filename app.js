@@ -1090,50 +1090,69 @@ async function generateStampedPhoto(entry){
   const coordLine = `Lat ${entry.lat.toFixed(6)}, Long ${entry.lng.toFixed(6)}`;
   const dateLine = formatStampDate(entry.timestamp);
   const regionTitle = businessName || deriveRegionTitle(address) || catText;
+  const creditText = 'Dicatat: GeoFoto Lapangan · BAPENDA Paser';
 
-  const outerMargin = Math.round(W * 0.028);
-  const innerPad = Math.round(W * 0.03);
-  const mapBoxGap = Math.round(W * 0.028);
-  const mapBoxSize = Math.round(W * 0.24);
-
-  const fsTitle = Math.max(17, Math.round(W * 0.040));
-  const fsSub   = Math.max(12, Math.round(W * 0.026));
-  const fsCoord = Math.max(15, Math.round(W * 0.030));
-  const fsSmall = Math.max(11, Math.round(W * 0.021));
-  const fsTiny  = Math.max(9,  Math.round(W * 0.017));
+  // Basis ukuran dipakai dari sisi TERPENDEK foto (bukan lebar saja) supaya foto
+  // lanskap (lebar tapi pendek) tidak menghasilkan kotak stempel yang kebesaran.
+  const base = Math.min(W, H);
   const lineSpacing = 1.32;
 
-  const panelWidth = W - outerMargin*2;
-  const textColWidth = panelWidth - innerPad*2 - mapBoxGap - mapBoxSize;
+  function buildLayout(scale){
+    const outerMargin = base * 0.030 * scale;
+    const innerPad = base * 0.032 * scale;
+    const mapBoxGap = base * 0.026 * scale;
+    const mapBoxSize = base * 0.20 * scale;
 
-  ctx.font = `${fsSub}px sans-serif`;
-  const addrLines = address ? wrapText(ctx, address, textColWidth).slice(0,2) : [];
+    const fsTitle = base * 0.034 * scale;
+    const fsSub   = base * 0.021 * scale;
+    const fsCoord = base * 0.026 * scale;
+    const fsSmall = base * 0.017 * scale;
+    const fsTiny  = base * 0.014 * scale;
 
-  // Ukuran huruf baris satu-baris (judul, kategori, koordinat, tanggal) otomatis
-  // dikecilkan kalau teksnya kepanjangan, supaya TIDAK PERNAH kepotong di tepi foto —
-  // ini yang jadi penyebab tulisan "Long ..." kepotong pada foto sempit/alamat panjang.
-  const titleSize = fitSingleLineFontSize(ctx, regionTitle, fsTitle, 'sans-serif', 'bold', textColWidth, Math.round(fsTitle*0.55));
-  const catSize = businessName ? fitSingleLineFontSize(ctx, catText, fsSub, 'sans-serif', '', textColWidth, Math.round(fsSub*0.6)) : fsSub;
-  const coordSize = fitSingleLineFontSize(ctx, coordLine, fsCoord, 'monospace', 'bold', textColWidth, Math.round(fsCoord*0.55));
-  const dateSize = fitSingleLineFontSize(ctx, dateLine, fsSmall, 'sans-serif', '', textColWidth, Math.round(fsSmall*0.6));
-  const creditText = 'Dicatat: GeoFoto Lapangan · BAPENDA Paser';
-  const creditSize = fitSingleLineFontSize(ctx, creditText, fsTiny, 'sans-serif', '', textColWidth, Math.round(fsTiny*0.6));
+    const panelWidth = W - outerMargin*2;
+    const textColWidth = panelWidth - innerPad*2 - mapBoxGap - mapBoxSize;
 
-  const textLines = [];
-  textLines.push({ text: regionTitle, font:`bold ${titleSize}px sans-serif`, size:titleSize, color:'#ffffff' });
-  if(businessName) textLines.push({ text: catText, font:`${catSize}px sans-serif`, size:catSize, color:'#cfd6e0' });
-  addrLines.forEach(l => textLines.push({ text:l, font:`${fsSub}px sans-serif`, size:fsSub, color:'#d8dde5' }));
-  textLines.push({ text: coordLine, font:`bold ${coordSize}px monospace`, size:coordSize, color:'#e0b354' });
-  textLines.push({ text: dateLine, font:`${dateSize}px sans-serif`, size:dateSize, color:'#b8c0cc' });
-  textLines.push({ text: creditText, font:`${creditSize}px sans-serif`, size:creditSize, color:'#93a0b0' });
+    ctx.font = `${fsSub}px sans-serif`;
+    const addrLines = address ? wrapText(ctx, address, textColWidth).slice(0,2) : [];
 
-  let textBlockHeight = 0;
-  textLines.forEach(l => textBlockHeight += l.size * lineSpacing);
+    // Ukuran huruf baris satu-baris (judul, kategori, koordinat, tanggal) otomatis
+    // dikecilkan lagi kalau teksnya kepanjangan, supaya TIDAK PERNAH kepotong di tepi foto.
+    const titleSize = fitSingleLineFontSize(ctx, regionTitle, fsTitle, 'sans-serif', 'bold', textColWidth, fsTitle*0.5);
+    const catSize = businessName ? fitSingleLineFontSize(ctx, catText, fsSub, 'sans-serif', '', textColWidth, fsSub*0.55) : fsSub;
+    const coordSize = fitSingleLineFontSize(ctx, coordLine, fsCoord, 'monospace', 'bold', textColWidth, fsCoord*0.5);
+    const dateSize = fitSingleLineFontSize(ctx, dateLine, fsSmall, 'sans-serif', '', textColWidth, fsSmall*0.55);
+    const creditSize = fitSingleLineFontSize(ctx, creditText, fsTiny, 'sans-serif', '', textColWidth, fsTiny*0.55);
 
-  const panelHeight = Math.max(mapBoxSize, textBlockHeight) + innerPad*2;
+    const textLines = [];
+    textLines.push({ text: regionTitle, font:`bold ${titleSize}px sans-serif`, size:titleSize, color:'#ffffff' });
+    if(businessName) textLines.push({ text: catText, font:`${catSize}px sans-serif`, size:catSize, color:'#cfd6e0' });
+    addrLines.forEach(l => textLines.push({ text:l, font:`${fsSub}px sans-serif`, size:fsSub, color:'#d8dde5' }));
+    textLines.push({ text: coordLine, font:`bold ${coordSize}px monospace`, size:coordSize, color:'#e0b354' });
+    textLines.push({ text: dateLine, font:`${dateSize}px sans-serif`, size:dateSize, color:'#b8c0cc' });
+    textLines.push({ text: creditText, font:`${creditSize}px sans-serif`, size:creditSize, color:'#93a0b0' });
+
+    let textBlockHeight = 0;
+    textLines.forEach(l => textBlockHeight += l.size * lineSpacing);
+    const panelHeight = Math.max(mapBoxSize, textBlockHeight) + innerPad*2;
+
+    return { outerMargin, innerPad, mapBoxGap, mapBoxSize, panelWidth, textColWidth, textLines, textBlockHeight, panelHeight };
+  }
+
+  // Kotak stempel dibatasi maksimal 24% dari TINGGI foto — kalau dengan ukuran
+  // normal ternyata masih lebih tinggi dari itu (foto lanskap pendek / teks banyak),
+  // semua elemen otomatis diperkecil proporsional sekali lagi.
+  let layout = buildLayout(1);
+  const maxPanelHeight = H * 0.24;
+  if(layout.panelHeight > maxPanelHeight){
+    const scale = Math.max(0.45, maxPanelHeight / layout.panelHeight);
+    layout = buildLayout(scale);
+  }
+
+  const { outerMargin, innerPad, mapBoxGap, mapBoxSize, panelWidth, textLines, textBlockHeight, panelHeight } = layout;
+
   const panelX = outerMargin;
   const panelY = H - outerMargin - panelHeight;
-  const panelRadius = Math.round(W * 0.018);
+  const panelRadius = base * 0.018;
 
   // panel gelap
   roundRectPath(ctx, panelX, panelY, panelWidth, panelHeight, panelRadius);
@@ -1144,7 +1163,7 @@ async function generateStampedPhoto(entry){
   const mapBoxX = panelX + innerPad;
   const mapBoxY = panelY + (panelHeight - mapBoxSize)/2;
   ctx.save();
-  roundRectPath(ctx, mapBoxX, mapBoxY, mapBoxSize, mapBoxSize, Math.round(W*0.014));
+  roundRectPath(ctx, mapBoxX, mapBoxY, mapBoxSize, mapBoxSize, base*0.014);
   ctx.clip();
   const mgrad = ctx.createLinearGradient(mapBoxX, mapBoxY, mapBoxX+mapBoxSize, mapBoxY+mapBoxSize);
   mgrad.addColorStop(0, '#7c8f6e');
