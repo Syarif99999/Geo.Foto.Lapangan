@@ -1109,19 +1109,22 @@ async function generateStampedPhoto(entry){
     const fsSmall = base * 0.017 * scale;
     const fsTiny  = base * 0.014 * scale;
 
-    const panelWidth = W - outerMargin*2;
-    const textColWidth = panelWidth - innerPad*2 - mapBoxGap - mapBoxSize;
+    // Batas lebar kolom teks TIDAK mengikuti lebar foto penuh — dibatasi relatif
+    // terhadap sisi terpendek foto, supaya di foto lanskap kotaknya tidak melebar
+    // jadi bilah panjang, melainkan tetap kompak seperti di foto potrait.
+    const availableWidth = W - outerMargin*2 - innerPad*2 - mapBoxGap - mapBoxSize;
+    const maxTextColWidth = Math.min(availableWidth, base * 1.55 * scale);
 
     ctx.font = `${fsSub}px sans-serif`;
-    const addrLines = address ? wrapText(ctx, address, textColWidth).slice(0,2) : [];
+    const addrLines = address ? wrapText(ctx, address, maxTextColWidth).slice(0,2) : [];
 
     // Ukuran huruf baris satu-baris (judul, kategori, koordinat, tanggal) otomatis
     // dikecilkan lagi kalau teksnya kepanjangan, supaya TIDAK PERNAH kepotong di tepi foto.
-    const titleSize = fitSingleLineFontSize(ctx, regionTitle, fsTitle, 'sans-serif', 'bold', textColWidth, fsTitle*0.5);
-    const catSize = businessName ? fitSingleLineFontSize(ctx, catText, fsSub, 'sans-serif', '', textColWidth, fsSub*0.55) : fsSub;
-    const coordSize = fitSingleLineFontSize(ctx, coordLine, fsCoord, 'monospace', 'bold', textColWidth, fsCoord*0.5);
-    const dateSize = fitSingleLineFontSize(ctx, dateLine, fsSmall, 'sans-serif', '', textColWidth, fsSmall*0.55);
-    const creditSize = fitSingleLineFontSize(ctx, creditText, fsTiny, 'sans-serif', '', textColWidth, fsTiny*0.55);
+    const titleSize = fitSingleLineFontSize(ctx, regionTitle, fsTitle, 'sans-serif', 'bold', maxTextColWidth, fsTitle*0.5);
+    const catSize = businessName ? fitSingleLineFontSize(ctx, catText, fsSub, 'sans-serif', '', maxTextColWidth, fsSub*0.55) : fsSub;
+    const coordSize = fitSingleLineFontSize(ctx, coordLine, fsCoord, 'monospace', 'bold', maxTextColWidth, fsCoord*0.5);
+    const dateSize = fitSingleLineFontSize(ctx, dateLine, fsSmall, 'sans-serif', '', maxTextColWidth, fsSmall*0.55);
+    const creditSize = fitSingleLineFontSize(ctx, creditText, fsTiny, 'sans-serif', '', maxTextColWidth, fsTiny*0.55);
 
     const textLines = [];
     textLines.push({ text: regionTitle, font:`bold ${titleSize}px sans-serif`, size:titleSize, color:'#ffffff' });
@@ -1130,6 +1133,18 @@ async function generateStampedPhoto(entry){
     textLines.push({ text: coordLine, font:`bold ${coordSize}px monospace`, size:coordSize, color:'#e0b354' });
     textLines.push({ text: dateLine, font:`${dateSize}px sans-serif`, size:dateSize, color:'#b8c0cc' });
     textLines.push({ text: creditText, font:`${creditSize}px sans-serif`, size:creditSize, color:'#93a0b0' });
+
+    // Lebar kolom teks yang SEBENARNYA dipakai = teks terpanjang yang benar-benar
+    // dirender (bukan otomatis selebar-lebarnya) — ini yang bikin kotak jadi
+    // sebesar isinya, seperti kartu, bukan bilah selebar foto.
+    let textColWidth = 0;
+    textLines.forEach(l => {
+      ctx.font = l.font;
+      textColWidth = Math.max(textColWidth, ctx.measureText(l.text).width);
+    });
+    textColWidth = Math.min(textColWidth, maxTextColWidth);
+
+    const panelWidth = innerPad + mapBoxSize + mapBoxGap + textColWidth + innerPad;
 
     let textBlockHeight = 0;
     textLines.forEach(l => textBlockHeight += l.size * lineSpacing);
@@ -1207,27 +1222,28 @@ async function generateStampedPhoto(entry){
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
 }
 
-async function shareEntry(id){
+async function shareEntry(id, withStamp){
+  if(withStamp === undefined) withStamp = true;
   const entry = await getEntry(id);
   if(!entry){ showToast('Data tidak ditemukan.'); return; }
-  showToast('Menyiapkan foto berkoordinat...');
+  showToast(withStamp ? 'Menyiapkan foto berkoordinat...' : 'Menyiapkan foto asli...');
   try{
-    const stampedBlob = await generateStampedPhoto(entry);
+    const photoBlob = withStamp ? await generateStampedPhoto(entry) : entry.photoBlob;
     const safeName = (entry.businessName || catLabel(entry.category)).replace(/[^a-z0-9]+/gi, '_');
     const fileName = `GeoFoto_${safeName}_${new Date(entry.timestamp).toISOString().slice(0,10)}.jpg`;
-    const file = new File([stampedBlob], fileName, { type:'image/jpeg' });
+    const file = new File([photoBlob], fileName, { type:'image/jpeg' });
     let shared = false;
 
     if(navigator.canShare && navigator.canShare({ files:[file] })){
       await navigator.share({ files:[file] });
       shared = true;
     } else {
-      const url = URL.createObjectURL(stampedBlob);
+      const url = URL.createObjectURL(photoBlob);
       const a = document.createElement('a');
       a.href = url; a.download = fileName;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
-      showToast('Foto berkoordinat sudah diunduh — lampirkan manual ke WhatsApp.');
+      showToast('Foto sudah diunduh — lampirkan manual ke WhatsApp.');
       shared = true;
     }
 
@@ -1318,6 +1334,7 @@ async function renderList(){
         ${!batchMode ? `
         <div class="entry-actions">
           <button class="mini-act" data-act="share" data-id="${en.id}">📤 Bagikan</button>
+          <button class="mini-act" data-act="share-raw" data-id="${en.id}">🚫 Tanpa Stempel</button>
           <button class="mini-act" data-act="edit" data-id="${en.id}">✏️ Edit</button>
           <button class="mini-act" data-act="maps" data-id="${en.id}">🗺️ Google Maps</button>
           <button class="mini-act danger" data-act="delete" data-id="${en.id}">🗑️ Hapus</button>
@@ -1373,7 +1390,10 @@ async function renderList(){
     img.addEventListener('click', () => openPhotoOverlay(parseInt(img.dataset.id, 10)));
   });
   container.querySelectorAll('[data-act="share"]').forEach(btn => {
-    btn.addEventListener('click', () => shareEntry(parseInt(btn.dataset.id, 10)));
+    btn.addEventListener('click', () => shareEntry(parseInt(btn.dataset.id, 10), true));
+  });
+  container.querySelectorAll('[data-act="share-raw"]').forEach(btn => {
+    btn.addEventListener('click', () => shareEntry(parseInt(btn.dataset.id, 10), false));
   });
   container.querySelectorAll('[data-act="edit"]').forEach(btn => {
     btn.addEventListener('click', () => openEditOverlay(parseInt(btn.dataset.id, 10)));
