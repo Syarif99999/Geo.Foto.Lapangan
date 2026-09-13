@@ -11,7 +11,8 @@ const CATEGORIES = [
   { id:'parkir', label:'Pajak Parkir', icon:'🅿️', sub:'Pendataan Parkir' },
   { id:'walet', label:'Sarang Burung Walet', icon:'🐦', sub:'Pajak Walet' },
   { id:'penagihan', label:'Penagihan', icon:'🧾', sub:'Penagihan Piutang Pajak' },
-  { id:'pbb_bphtb', label:'PBB & BPHTB', icon:'🏠', sub:'PBB & BPHTB' }
+  { id:'pbb_bphtb', label:'PBB & BPHTB', icon:'🏠', sub:'PBB & BPHTB' },
+  { id:'umum', label:'Umum', icon:'📁', sub:'Objek Pajak Lainnya' }
 ];
 
 const FALLBACK_CENTER = [-1.6136, 116.2019]; // Tanah Grogot, Paser
@@ -90,7 +91,21 @@ async function getEntriesByCategory(cat){
     const tx = db.transaction(STORE, 'readonly');
     const idx = tx.objectStore(STORE).index('category');
     const req = idx.getAll(cat);
-    req.onsuccess = () => resolve(req.result.sort((a,b) => b.timestamp - a.timestamp));
+    req.onsuccess = () => resolve(
+      req.result.filter(en => en.deleted !== true).sort((a,b) => b.timestamp - a.timestamp)
+    );
+    req.onerror = () => reject(req.error);
+  });
+}
+async function getTrashByCategory(cat){
+  const db = await dbPromise;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const idx = tx.objectStore(STORE).index('category');
+    const req = idx.getAll(cat);
+    req.onsuccess = () => resolve(
+      req.result.filter(en => en.deleted === true).sort((a,b) => (b.deletedAt||0) - (a.deletedAt||0))
+    );
     req.onerror = () => reject(req.error);
   });
 }
@@ -102,6 +117,21 @@ async function getAllEntries(){
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 hari
+async function purgeOldTrash(){
+  try{
+    const all = await getAllEntries();
+    const now = Date.now();
+    const expired = all.filter(en => en.deleted === true && en.deletedAt && (now - en.deletedAt) > TRASH_RETENTION_MS);
+    for(const en of expired){
+      await deleteEntry(en.id);
+      const cloudId = en.cloudDocId || String(en.id);
+      deleteEntryFromCloud(cloudId);
+    }
+    if(expired.length > 0 && currentTab === 'list') renderList();
+  }catch(e){ console.warn('Gagal membersihkan sampah lama:', e); }
 }
 
 /* ==========================================================================
@@ -898,7 +928,10 @@ async function restoreFromCloud(){
     const snapshot = await firestoreDB.collection(FIRESTORE_COLLECTION)
       .where('category', '==', currentCategory).get();
 
-    const localEntries = await getEntriesByCategory(currentCategory);
+    const allLocal = await getAllEntries();
+    // Cek termasuk yang ada di Sampah juga, supaya data yang baru dihapus (belum lewat 30 hari)
+    // tidak ditarik ulang jadi dobel oleh "Pulihkan dari Cloud".
+    const localEntries = allLocal.filter(e => e.category === currentCategory);
     const existingCloudIds = new Set(localEntries.map(e => e.cloudDocId).filter(Boolean));
 
     let restored = 0;
@@ -1177,6 +1210,7 @@ async function shareEntry(id){
 let listObjectUrls = [];
 let batchMode = false;
 let selectedIds = new Set();
+let viewingTrash = false;
 
 function toggleBatchMode(){
   batchMode = !batchMode;
@@ -1185,6 +1219,16 @@ function toggleBatchMode(){
   document.getElementById('batchBar').style.display = batchMode ? 'flex' : 'none';
   document.getElementById('entryList').style.paddingBottom = batchMode ? '80px' : '0';
   updateBatchBar();
+  renderList();
+}
+
+function toggleTrashView(){
+  viewingTrash = !viewingTrash;
+  document.getElementById('btnViewTrash').textContent = viewingTrash ? '⬅ Kembali ke Daftar' : '🗑️ Sampah';
+  document.getElementById('btnBatchMode').style.display = viewingTrash ? 'none' : 'inline-block';
+  document.getElementById('btnRestoreCloud').style.display = viewingTrash ? 'none' : 'inline-block';
+  document.getElementById('btnExportExcel').style.display = viewingTrash ? 'none' : 'inline-block';
+  document.getElementById('btnExportZip').style.display = viewingTrash ? 'none' : 'inline-block';
   renderList();
 }
 
@@ -1197,10 +1241,14 @@ async function renderList(){
   listObjectUrls = [];
 
   const container = document.getElementById('entryList');
-  const entries = await getEntriesByCategory(currentCategory);
+  const entries = viewingTrash
+    ? await getTrashByCategory(currentCategory)
+    : await getEntriesByCategory(currentCategory);
 
   if(entries.length === 0){
-    container.innerHTML = `<div class="empty-state"><div class="ic">📭</div><p>Belum ada foto tersimpan untuk kategori ini.<br>Silakan ambil atau impor foto pada tab "Ambil/Impor".</p></div>`;
+    container.innerHTML = viewingTrash
+      ? `<div class="empty-state"><div class="ic">🗑️</div><p>Sampah kosong untuk kategori ini.</p></div>`
+      : `<div class="empty-state"><div class="ic">📭</div><p>Belum ada foto tersimpan untuk kategori ini.<br>Silakan ambil atau impor foto pada tab "Ambil/Impor".</p></div>`;
     return;
   }
 
@@ -1212,14 +1260,19 @@ async function renderList(){
     const isSelected = selectedIds.has(en.id);
     const card = document.createElement('div');
     card.className = 'entry-card' + (isSelected ? ' selected' : '');
-    card.innerHTML = `
-      ${batchMode ? `<input type="checkbox" class="entry-checkbox" data-id="${en.id}" ${isSelected ? 'checked' : ''}>` : ''}
-      <img class="entry-thumb" src="${thumbUrl}" data-id="${en.id}" alt="Foto">
-      <div class="entry-body">
-        ${en.businessName ? `<div class="entry-business">${escapeHtml(en.businessName)}</div>` : ''}
-        <div class="entry-addr">${escapeHtml(addr)}</div>
+
+    let actionsHtml;
+    if(viewingTrash){
+      const sisaHari = en.deletedAt ? Math.max(0, 30 - Math.floor((Date.now()-en.deletedAt)/86400000)) : 30;
+      actionsHtml = `
+        <div class="entry-pending">🗑️ Terhapus ${fmtDate(en.deletedAt)} &middot; sisa ${sisaHari} hari sebelum hilang permanen</div>
+        <div class="entry-actions">
+          <button class="mini-act" data-act="restore" data-id="${en.id}">↩️ Pulihkan</button>
+          <button class="mini-act danger" data-act="purge" data-id="${en.id}">❌ Hapus Permanen</button>
+        </div>`;
+    } else {
+      actionsHtml = `
         ${en.shareCount > 1 ? `<div class="entry-share-warn">⚠️ Sudah dikirim ${en.shareCount}x ke WA — cek jangan dobel</div>` : (en.shareCount === 1 ? `<div class="entry-share-ok">✅ Sudah dikirim ke WA</div>` : '')}
-        <div class="entry-meta">📍 ${en.lat.toFixed(5)}, ${en.lng.toFixed(5)} &middot; ${fmtDate(en.timestamp)}</div>
         ${en.geocodePending ? `<div class="entry-pending">⏳ Alamat otomatis menunggu koneksi internet</div>` : ''}
         ${en.cloudSynced === false ? `<div class="entry-pending">☁️ Menunggu disinkron ke Peta Pantau</div>` : ''}
         ${en.note ? `<div class="entry-note">"${escapeHtml(en.note)}"</div>` : ''}
@@ -1229,11 +1282,31 @@ async function renderList(){
           <button class="mini-act" data-act="edit" data-id="${en.id}">✏️ Edit</button>
           <button class="mini-act" data-act="maps" data-id="${en.id}">🗺️ Google Maps</button>
           <button class="mini-act danger" data-act="delete" data-id="${en.id}">🗑️ Hapus</button>
-        </div>` : ''}
+        </div>` : ''}`;
+    }
+
+    card.innerHTML = `
+      ${(batchMode && !viewingTrash) ? `<input type="checkbox" class="entry-checkbox" data-id="${en.id}" ${isSelected ? 'checked' : ''}>` : ''}
+      <img class="entry-thumb" src="${thumbUrl}" data-id="${en.id}" alt="Foto">
+      <div class="entry-body">
+        ${en.businessName ? `<div class="entry-business">${escapeHtml(en.businessName)}</div>` : ''}
+        <div class="entry-addr">${escapeHtml(addr)}</div>
+        <div class="entry-meta">📍 ${en.lat.toFixed(5)}, ${en.lng.toFixed(5)} &middot; ${fmtDate(en.timestamp)}</div>
+        ${actionsHtml}
       </div>
     `;
     container.appendChild(card);
   });
+
+  if(viewingTrash){
+    container.querySelectorAll('[data-act="restore"]').forEach(btn => {
+      btn.addEventListener('click', () => restoreFromTrash(parseInt(btn.dataset.id, 10)));
+    });
+    container.querySelectorAll('[data-act="purge"]').forEach(btn => {
+      btn.addEventListener('click', () => permanentlyDeleteEntry(parseInt(btn.dataset.id, 10)));
+    });
+    return;
+  }
 
   if(batchMode){
     const toggleSelect = (id) => {
@@ -1278,15 +1351,29 @@ async function renderList(){
 }
 
 async function onDeleteEntry(id){
-  if(!confirm('Hapus foto ini beserta datanya? Tindakan tidak bisa dibatalkan.')) return;
+  if(!confirm('Pindahkan foto ini ke Sampah? Masih bisa dipulihkan kapan saja selama 30 hari lewat menu "Sampah".')) return;
+  await updateEntry(id, { deleted:true, deletedAt: Date.now() });
+  showToast('Foto dipindahkan ke Sampah.');
+  renderList();
+  refreshMenuBadge(currentCategory);
+}
+
+async function restoreFromTrash(id){
+  await updateEntry(id, { deleted:false, deletedAt:null });
+  showToast('Foto dipulihkan dari Sampah.');
+  renderList();
+  refreshMenuBadge(currentCategory);
+}
+
+async function permanentlyDeleteEntry(id){
+  if(!confirm('Hapus PERMANEN foto ini? Tindakan ini tidak bisa dibatalkan lagi (tidak bisa dipulihkan).')) return;
   const entry = await getEntry(id);
   await deleteEntry(id);
   // Penting: hapus dari cloud pakai cloudDocId (bukan id lokal), karena untuk data
   // hasil "Pulihkan dari Cloud", id lokal berbeda dengan id dokumen di Firestore.
-  // Kalau ini keliru, data yang dihapus bisa "muncul lagi" saat Pulihkan dari Cloud ditekan lagi.
   const cloudId = (entry && entry.cloudDocId) ? entry.cloudDocId : String(id);
   deleteEntryFromCloud(cloudId);
-  showToast('Data dihapus.');
+  showToast('Foto dihapus permanen.');
   renderList();
   refreshMenuBadge(currentCategory);
 }
@@ -1460,8 +1547,14 @@ function goToCategory(catId){
   lastSavedEntryId = null;
   batchMode = false;
   selectedIds.clear();
+  viewingTrash = false;
   document.getElementById('batchBar').style.display = 'none';
   document.getElementById('btnBatchMode').textContent = '☑️ Pilih Banyak';
+  document.getElementById('btnViewTrash').textContent = '🗑️ Sampah';
+  document.getElementById('btnBatchMode').style.display = 'inline-block';
+  document.getElementById('btnRestoreCloud').style.display = 'inline-block';
+  document.getElementById('btnExportExcel').style.display = 'inline-block';
+  document.getElementById('btnExportZip').style.display = 'inline-block';
   onCancelQueue();
   switchTab('capture');
   window.scrollTo({ top:0, behavior:'smooth' });
@@ -1494,6 +1587,7 @@ window.addEventListener('DOMContentLoaded', () => {
   renderMenu();
   retryPendingGeocodes();
   retryPendingCloudSync();
+  purgeOldTrash();
 
   document.getElementById('btnCamera').addEventListener('click', () => document.getElementById('inputCamera').click());
   document.getElementById('btnImport').addEventListener('click', () => document.getElementById('inputImport').click());
@@ -1534,6 +1628,7 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnBatchMode').addEventListener('click', toggleBatchMode);
   document.getElementById('btnBatchShare').addEventListener('click', onBatchShare);
   document.getElementById('btnBatchCancel').addEventListener('click', toggleBatchMode);
+  document.getElementById('btnViewTrash').addEventListener('click', toggleTrashView);
   document.getElementById('btnShareLastSaved').addEventListener('click', () => {
     if(lastSavedEntryId != null) shareEntry(lastSavedEntryId);
   });

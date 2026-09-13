@@ -34,13 +34,22 @@ const FIRESTORE_COLLECTION = 'geofoto_entries';
      match /databases/{database}/documents {
        match /geofoto_entries/{docId} {
          allow read: if true;
-         allow write: if request.resource.data.keys().hasAll(['category','lat','lng','timestamp']);
+         allow create: if request.resource.data.keys().hasAll(['category','lat','lng','timestamp']);
+         allow update: if request.resource.data.keys().hasAll(['category','lat','lng','timestamp']);
+         allow delete: if true;
        }
      }
    }
 
-   Catatan: rule di atas mengizinkan siapa saja MEMBACA (untuk Peta Pantau publik)
-   dan menulis HANYA jika data yang dikirim punya field wajib. Ini cukup untuk
-   aplikasi internal skala kecil. Kalau nanti butuh lebih ketat (misal hanya HP
-   petugas yang boleh menulis), bisa ditambahkan App Check atau autentikasi.
+   PENTING: create/update/delete dipisah sengaja — kalau digabung jadi satu
+   "allow write" dengan syarat field wajib, perintah DELETE akan selalu
+   ditolak Firestore (karena saat hapus, request.resource bernilai null,
+   jadi pengecekan field pasti gagal). Ini pernah jadi penyebab data yang
+   sudah dihapus di HP tetap muncul lagi lewat "Pulihkan dari Cloud".
+
+   Catatan: rule di atas mengizinkan siapa saja MEMBACA (untuk Peta Pantau
+   publik), MENULIS data baru/ubah data (asal field wajib lengkap), dan
+   MENGHAPUS bebas. Ini cukup untuk aplikasi internal skala kecil. Kalau
+   nanti butuh lebih ketat (misal hanya HP petugas yang boleh menulis),
+   bisa ditambahkan App Check atau autentikasi.
    ========================================================================== */

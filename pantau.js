@@ -11,7 +11,8 @@ const CATEGORY_META = {
   parkir:     { label:'Pajak Parkir',           color:'#1f6fa8', icon:'🅿️' },
   walet:      { label:'Sarang Burung Walet',    color:'#0e8f8f', icon:'🐦' },
   penagihan:  { label:'Penagihan',              color:'#a8352b', icon:'🧾' },
-  pbb_bphtb:  { label:'PBB & BPHTB',            color:'#8a6d3b', icon:'🏠' }
+  pbb_bphtb:  { label:'PBB & BPHTB',            color:'#8a6d3b', icon:'🏠' },
+  umum:       { label:'Umum',                   color:'#6b7280', icon:'📁' }
 };
 
 const FALLBACK_CENTER = [-1.6136, 116.2019]; // Tanah Grogot, Paser
