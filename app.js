@@ -1761,9 +1761,9 @@ function buildExportWorkbook(entries, photoFolder){
     const entry = entries[r - 2];
     const photoName = exportPhotoFileName(entry, r - 2);
     const lat = Number(entry.lat), lng = Number(entry.lng);
-    const photoTarget = `${photoFolder}/${photoName}`;
+    const photoTarget = `./${photoFolder}/${photoName}`;
     const mapTarget = `https://www.google.com/maps?q=${encodeURIComponent(`${lat},${lng}`)}`;
-    ws[`M${r}`].l = { Target: photoTarget, Tooltip: 'Buka foto lapangan' };
+    ws[`M${r}`].l = { Target: photoTarget, Tooltip: 'Buka foto lapangan berstempel koordinat' };
     ws[`N${r}`].l = { Target: mapTarget, Tooltip: 'Buka lokasi di Google Maps' };
     ws[`M${r}`].s = { font: { color: { rgb: '0563C1' }, underline: true } };
     ws[`N${r}`].s = { font: { color: { rgb: '0563C1' }, underline: true } };
@@ -1774,7 +1774,7 @@ function buildExportWorkbook(entries, photoFolder){
     ['Petunjuk Ekspor Geo Foto Lapangan'],
     ['Koordinat', 'Latitude dan longitude otomatis dari setiap data.'],
     ['Buka Peta', 'Klik tautan untuk membuka lokasi di Google Maps.'],
-    ['Buka Foto', 'Tautan foto bekerja jika file Excel berada bersama folder foto hasil ekspor ZIP.']
+    ['Buka Foto', 'Tautan foto bekerja jika file Excel berada bersama folder foto hasil ekspor ZIP. Foto sudah diberi stempel koordinat.']
   ]);
   info['!cols'] = [{wch:18},{wch:95}];
   XLSX.utils.book_append_sheet(wb, info, 'Petunjuk');
@@ -1800,14 +1800,26 @@ async function exportZip(){
   const root = zip.folder(currentCategory);
   const photoFolderName = 'foto';
   const photoFolder = root.folder(photoFolderName);
-  entries.forEach((en, i) => photoFolder.file(exportPhotoFileName(en, i), en.photoBlob));
+  for(let i = 0; i < entries.length; i++){
+    const en = entries[i];
+    let exportBlob = en.photoBlob || en.thumbBlob;
+    try{
+      if(en.lat != null && en.lng != null && exportBlob){
+        exportBlob = await generateStampedPhoto({ ...en, photoBlob: exportBlob });
+      }
+    }catch(err){
+      console.warn('Gagal memberi stempel koordinat saat ekspor:', err);
+    }
+    photoFolder.file(exportPhotoFileName(en, i), exportBlob);
+  }
 
   const wb = buildExportWorkbook(entries, photoFolderName);
   const workbookBytes = XLSX.write(wb, { bookType:'xlsx', type:'array' });
   root.file(`GeoFoto_${currentCategory}.xlsx`, workbookBytes);
   root.file('README.txt',
     'Buka file Excel untuk melihat koordinat, membuka Google Maps, dan membuka foto.\n' +
-    'Jangan memindahkan file Excel tanpa folder foto agar tautan foto tetap bekerja.\n'
+    'Jangan memindahkan file Excel tanpa folder foto agar tautan foto tetap bekerja.\n' +
+    'Foto dalam folder foto sudah diproses dengan stempel koordinat.\n'
   );
 
   const content = await zip.generateAsync({ type:'blob' });
