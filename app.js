@@ -70,6 +70,16 @@ function makeCloudDocId(localId){
   return `${DEVICE_ID}_${localId}`;
 }
 
+// Selalu pertahankan ID dokumen cloud yang sudah melekat pada entri.
+// Entri lama sebelum cloudDocId diperkenalkan memakai id lokal sebagai ID
+// Firestore; pertahankan pola lama untuk data yang sudah pernah tersinkron
+// agar migrasi tidak meninggalkan salinan baru di cloud.
+function getStableCloudDocId(entry){
+  if(entry && entry.cloudDocId) return String(entry.cloudDocId);
+  if(entry && entry.cloudSynced === true && entry.id != null) return String(entry.id);
+  return makeCloudDocId(entry.id);
+}
+
 async function addEntry(entry){
   const db = await dbPromise;
   return new Promise((resolve, reject) => {
@@ -154,7 +164,7 @@ async function purgeOldTrash(){
     const expired = all.filter(en => en.deleted === true && en.deletedAt && (now - en.deletedAt) > TRASH_RETENTION_MS);
     for(const en of expired){
       await deleteEntry(en.id);
-      const cloudId = en.cloudDocId || makeCloudDocId(en.id);
+      const cloudId = getStableCloudDocId(en);
       deleteEntryFromCloud(cloudId);
     }
     if(expired.length > 0 && currentTab === 'list') renderList();
@@ -871,7 +881,7 @@ async function retryPendingCloudSync(){
     let ok = 0;
     for(const en of pending){
       if(!navigator.onLine) break;
-      const docId = en.cloudDocId || makeCloudDocId(en.id);
+      const docId = getStableCloudDocId(en);
       const success = await syncEntryToCloud(docId, en);
       if(success){ await updateEntry(en.id, { cloudSynced:true, cloudDocId:docId }); ok++; }
     }
@@ -889,9 +899,10 @@ async function retryPendingCloudSync(){
 /* ==========================================================================
    SINKRON ULANG SEMUA DATA (perbaikan data lama yang hilang/tertimpa di
    Peta Pantau akibat bug ID dokumen cloud sebelum diperbaiki). Menekan
-   ulang SEMUA entri lokal (bukan cuma yang belum sinkron) memakai skema
-   ID baru yang aman lintas HP (makeCloudDocId), lalu memperbarui
-   cloudDocId-nya. Dipicu manual lewat tombol "Sinkron Ulang".
+   ulang SEMUA entri lokal (bukan cuma yang belum sinkron), tetapi tetap
+   memakai ID dokumen cloud yang sudah ada agar tidak membuat salinan baru.
+   Entri baru memakai ID aman lintas HP. Dipicu manual lewat tombol
+   "Sinkron Ulang".
    ========================================================================== */
 let forceSyncRunning = false;
 async function forceResyncAll(){
@@ -908,7 +919,10 @@ async function forceResyncAll(){
     let ok = 0, fail = 0;
     for(const en of toSync){
       if(!navigator.onLine) break;
-      const docId = makeCloudDocId(en.id);
+      // Jangan pernah mengganti ID dokumen yang sudah ada. Mengganti ID di
+      // sini membuat Firestore menyimpan dokumen lama dan dokumen baru,
+      // sehingga satu foto tampak dua kali setelah sinkron ulang.
+      const docId = getStableCloudDocId(en);
       const success = await syncEntryToCloud(docId, en);
       if(success){ await updateEntry(en.id, { cloudSynced:true, cloudDocId:docId }); ok++; }
       else fail++;
@@ -1609,7 +1623,7 @@ async function saveEditOverlay(){
   const fresh = await getEntry(editingId);
   // Pakai cloudDocId yang SUDAH ADA kalau ini data hasil pulihan dari cloud —
   // supaya update menimpa dokumen yang sama, bukan bikin dokumen baru di cloud.
-  const docId = fresh.cloudDocId || String(editingId);
+  const docId = getStableCloudDocId(fresh);
   const synced = await syncEntryToCloud(docId, fresh);
   const changes = { cloudSynced: synced };
   if(synced) changes.cloudDocId = docId;
