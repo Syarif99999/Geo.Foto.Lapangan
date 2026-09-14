@@ -1763,10 +1763,19 @@ function buildExportWorkbook(entries, photoFolder){
     const lat = Number(entry.lat), lng = Number(entry.lng);
     const photoTarget = `./${photoFolder}/${photoName}`;
     const mapTarget = `https://www.google.com/maps?q=${encodeURIComponent(`${lat},${lng}`)}`;
-    ws[`M${r}`].l = { Target: photoTarget, Tooltip: 'Buka foto lapangan berstempel koordinat' };
-    ws[`N${r}`].l = { Target: mapTarget, Tooltip: 'Buka lokasi di Google Maps' };
-    ws[`M${r}`].s = { font: { color: { rgb: '0563C1' }, underline: true } };
-    ws[`N${r}`].s = { font: { color: { rgb: '0563C1' }, underline: true } };
+    // Gunakan rumus HYPERLINK, bukan hanya metadata hyperlink. SheetJS
+    // Community dan Microsoft Excel sama-sama membaca rumus ini secara
+    // konsisten, termasuk tautan file lokal di dalam folder ZIP.
+    ws[`M${r}`] = {
+      t: 'str',
+      f: `HYPERLINK("${photoTarget}","Buka Foto")`,
+      v: 'Buka Foto'
+    };
+    ws[`N${r}`] = {
+      t: 'str',
+      f: `HYPERLINK("${mapTarget}","Buka Peta")`,
+      v: 'Buka Peta'
+    };
   }
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Data Foto Lapangan');
