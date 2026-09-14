@@ -43,6 +43,33 @@ function openDB(){
 }
 const dbPromise = openDB();
 
+/* ==========================================================================
+   ID PERANGKAT (untuk mencegah tabrakan ID dokumen Firestore)
+   --------------------------------------------------------------------------
+   PENTING: id entri di IndexedDB (keyPath 'id', autoIncrement) HANYA unik
+   di dalam satu HP. Kalau id lokal itu dipakai LANGSUNG sebagai ID dokumen
+   Firestore, dua HP berbeda yang sama-sama punya entri id=1,2,3,... akan
+   saling TIMPA di cloud (dokumen terakhir yang menang) — inilah penyebab
+   "Daftar Data" di HP tidak singkron / data lama hilang di Peta Pantau.
+   Solusi: setiap HP punya DEVICE_ID acak yang disimpan permanen di
+   localStorage, lalu ID dokumen cloud dibentuk dari `${DEVICE_ID}_${id}`
+   supaya dijamin unik lintas HP.
+   ========================================================================== */
+function getDeviceId(){
+  let id = localStorage.getItem('geoFotoDeviceId');
+  if(!id){
+    id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : ('dev-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2));
+    localStorage.setItem('geoFotoDeviceId', id);
+  }
+  return id;
+}
+const DEVICE_ID = getDeviceId();
+function makeCloudDocId(localId){
+  return `${DEVICE_ID}_${localId}`;
+}
+
 async function addEntry(entry){
   const db = await dbPromise;
   return new Promise((resolve, reject) => {
@@ -127,7 +154,7 @@ async function purgeOldTrash(){
     const expired = all.filter(en => en.deleted === true && en.deletedAt && (now - en.deletedAt) > TRASH_RETENTION_MS);
     for(const en of expired){
       await deleteEntry(en.id);
-      const cloudId = en.cloudDocId || String(en.id);
+      const cloudId = en.cloudDocId || makeCloudDocId(en.id);
       deleteEntryFromCloud(cloudId);
     }
     if(expired.length > 0 && currentTab === 'list') renderList();
@@ -699,9 +726,10 @@ async function onSaveDraft(){
   showToast('Foto tersimpan ✅');
   lastSavedEntryId = localId;
   document.getElementById('lastSavedBar').style.display = 'flex';
-  const synced = await syncEntryToCloud(localId, entry);
+  const cloudDocId = makeCloudDocId(localId);
+  const synced = await syncEntryToCloud(cloudDocId, entry);
   const changes = { cloudSynced: synced };
-  if(synced) changes.cloudDocId = String(localId);
+  if(synced) changes.cloudDocId = cloudDocId;
   await updateEntry(localId, changes);
   qIndex++;
   processQueueItem();
@@ -836,12 +864,14 @@ async function retryPendingCloudSync(){
     const all = await getAllEntries();
     // cloudSynced !== true mencakup entri lama yang dibuat SEBELUM Firebase
     // diaktifkan sekalipun (field-nya belum pernah ada sama sekali).
-    const pending = all.filter(en => en.cloudSynced !== true);
+    // en.deleted !== true supaya foto yang sudah dipindah ke Sampah TIDAK
+    // ikut terkirim ke Peta Pantau publik.
+    const pending = all.filter(en => en.cloudSynced !== true && en.deleted !== true);
     if(pending.length === 0) return;
     let ok = 0;
     for(const en of pending){
       if(!navigator.onLine) break;
-      const docId = en.cloudDocId || String(en.id);
+      const docId = en.cloudDocId || makeCloudDocId(en.id);
       const success = await syncEntryToCloud(docId, en);
       if(success){ await updateEntry(en.id, { cloudSynced:true, cloudDocId:docId }); ok++; }
     }
@@ -853,6 +883,46 @@ async function retryPendingCloudSync(){
     }
   } finally {
     cloudRetryRunning = false;
+  }
+}
+
+/* ==========================================================================
+   SINKRON ULANG SEMUA DATA (perbaikan data lama yang hilang/tertimpa di
+   Peta Pantau akibat bug ID dokumen cloud sebelum diperbaiki). Menekan
+   ulang SEMUA entri lokal (bukan cuma yang belum sinkron) memakai skema
+   ID baru yang aman lintas HP (makeCloudDocId), lalu memperbarui
+   cloudDocId-nya. Dipicu manual lewat tombol "Sinkron Ulang".
+   ========================================================================== */
+let forceSyncRunning = false;
+async function forceResyncAll(){
+  if(!firebaseReady){ showToast('Fitur cloud belum aktif (cek firebase-config.js).'); return; }
+  if(!navigator.onLine){ showToast('Perlu koneksi internet untuk sinkron ulang.'); return; }
+  if(forceSyncRunning) return;
+  forceSyncRunning = true;
+  const btn = document.getElementById('btnForceSync');
+  const originalText = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = '🔁 Menyinkron ulang...'; }
+  try{
+    const all = await getAllEntries();
+    const toSync = all.filter(en => en.deleted !== true);
+    let ok = 0, fail = 0;
+    for(const en of toSync){
+      if(!navigator.onLine) break;
+      const docId = makeCloudDocId(en.id);
+      const success = await syncEntryToCloud(docId, en);
+      if(success){ await updateEntry(en.id, { cloudSynced:true, cloudDocId:docId }); ok++; }
+      else fail++;
+    }
+    showToast(fail === 0
+      ? `🔁 ${ok} data berhasil disinkron ulang ke Peta Pantau.`
+      : `🔁 ${ok} berhasil, ${fail} gagal (cek koneksi lalu coba lagi).`);
+    if(currentTab === 'list') renderList();
+  }catch(e){
+    console.error('Gagal sinkron ulang semua data:', e);
+    showToast('Gagal sinkron ulang. Coba lagi nanti.');
+  } finally {
+    forceSyncRunning = false;
+    if(btn){ btn.disabled = false; btn.textContent = originalText; }
   }
 }
 
@@ -1341,6 +1411,8 @@ function toggleTrashView(){
   document.getElementById('btnViewTrash').textContent = viewingTrash ? '⬅ Kembali ke Daftar' : '🗑️ Sampah';
   document.getElementById('btnBatchMode').style.display = viewingTrash ? 'none' : 'inline-block';
   document.getElementById('btnRestoreCloud').style.display = viewingTrash ? 'none' : 'inline-block';
+  const btnForceSyncEl = document.getElementById('btnForceSync');
+  if(btnForceSyncEl) btnForceSyncEl.style.display = viewingTrash ? 'none' : 'inline-block';
   document.getElementById('btnExportExcel').style.display = viewingTrash ? 'none' : 'inline-block';
   document.getElementById('btnExportZip').style.display = viewingTrash ? 'none' : 'inline-block';
   renderList();
@@ -1489,7 +1561,7 @@ async function permanentlyDeleteEntry(id){
   await deleteEntry(id);
   // Penting: hapus dari cloud pakai cloudDocId (bukan id lokal), karena untuk data
   // hasil "Pulihkan dari Cloud", id lokal berbeda dengan id dokumen di Firestore.
-  const cloudId = (entry && entry.cloudDocId) ? entry.cloudDocId : String(id);
+  const cloudId = (entry && entry.cloudDocId) ? entry.cloudDocId : makeCloudDocId(id);
   deleteEntryFromCloud(cloudId);
   showToast('Foto dihapus permanen.');
   renderList();
@@ -1671,6 +1743,8 @@ function goToCategory(catId){
   document.getElementById('btnViewTrash').textContent = '🗑️ Sampah';
   document.getElementById('btnBatchMode').style.display = 'inline-block';
   document.getElementById('btnRestoreCloud').style.display = 'inline-block';
+  const btnForceSyncEl2 = document.getElementById('btnForceSync');
+  if(btnForceSyncEl2) btnForceSyncEl2.style.display = 'inline-block';
   document.getElementById('btnExportExcel').style.display = 'inline-block';
   document.getElementById('btnExportZip').style.display = 'inline-block';
   onCancelQueue();
@@ -1745,6 +1819,8 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnExportExcel').addEventListener('click', exportExcel);
   document.getElementById('btnExportZip').addEventListener('click', exportZip);
   document.getElementById('btnRestoreCloud').addEventListener('click', restoreFromCloud);
+  const btnForceSync = document.getElementById('btnForceSync');
+  if(btnForceSync) btnForceSync.addEventListener('click', forceResyncAll);
   document.getElementById('btnBatchMode').addEventListener('click', toggleBatchMode);
   document.getElementById('btnBatchShare').addEventListener('click', onBatchShare);
   document.getElementById('btnBatchCancel').addEventListener('click', toggleBatchMode);
