@@ -915,6 +915,65 @@ function dataURLToBlob(dataUrl){
   return new Blob([arr], { type: mime });
 }
 
+/* ==========================================================================
+   SINKRON REAL-TIME PER KATEGORI (supaya Daftar Data otomatis update
+   begitu rekan kerja lain mengambil foto — tanpa perlu klik "Pulihkan dari
+   Cloud" manual). Berjalan mirip Peta Pantau: listen ke Firestore selama
+   user berada di dalam satu kategori, tarik entri baru dari rekan kerja
+   ke IndexedDB lokal, lalu render ulang daftar kalau sedang di tab List.
+   ========================================================================== */
+let categoryCloudUnsub = null;
+
+function startCategoryCloudSync(catId){
+  stopCategoryCloudSync();
+  if(!firebaseReady) return;
+  categoryCloudUnsub = firestoreDB.collection(FIRESTORE_COLLECTION)
+    .where('category', '==', catId)
+    .onSnapshot(async (snapshot) => {
+      try{
+        const allLocal = await getAllEntries();
+        const existingCloudIds = new Set(
+          allLocal.filter(e => e.category === catId).map(e => e.cloudDocId).filter(Boolean)
+        );
+        let added = 0;
+        for(const doc of snapshot.docs){
+          if(existingCloudIds.has(doc.id)) continue; // sudah ada di HP ini (termasuk punya sendiri)
+          const d = doc.data();
+          let blob;
+          try{ blob = dataURLToBlob(d.thumbDataUrl); }catch(e){ continue; }
+          await addEntry({
+            category: d.category || catId,
+            businessName: d.businessName || '',
+            lat: d.lat, lng: d.lng,
+            coordSource: 'Disinkron otomatis dari cloud',
+            addressAuto: d.address || '',
+            addressManual: d.address || '',
+            note: d.note || '',
+            timestamp: d.timestamp || Date.now(),
+            photoBlob: blob,
+            thumbBlob: blob,
+            fileName: `cloud_${doc.id}.jpg`,
+            cloudSynced: true,
+            cloudDocId: doc.id
+          });
+          existingCloudIds.add(doc.id);
+          added++;
+        }
+        if(added > 0){
+          refreshMenuBadge(catId);
+          if(currentTab === 'list' && currentCategory === catId) renderList();
+          if(currentTab === 'map' && currentCategory === catId && typeof renderOverviewMap === 'function') renderOverviewMap();
+        }
+      }catch(e){
+        console.warn('Gagal sinkron real-time kategori:', e);
+      }
+    }, (err) => console.warn('Listener cloud kategori error:', err));
+}
+
+function stopCategoryCloudSync(){
+  if(categoryCloudUnsub){ categoryCloudUnsub(); categoryCloudUnsub = null; }
+}
+
 async function restoreFromCloud(){
   if(!firebaseReady){ showToast('Fitur cloud belum aktif (cek firebase-config.js).'); return; }
   if(!navigator.onLine){ showToast('Perlu koneksi internet untuk memulihkan data.'); return; }
@@ -1617,6 +1676,7 @@ function goToCategory(catId){
   onCancelQueue();
   switchTab('capture');
   window.scrollTo({ top:0, behavior:'smooth' });
+  startCategoryCloudSync(catId);
 }
 
 function goToMenu(){
@@ -1625,6 +1685,7 @@ function goToMenu(){
   document.getElementById('viewMenu').style.display = 'block';
   currentCategory = null;
   if(overviewMap){ overviewMap.remove(); overviewMap = null; }
+  stopCategoryCloudSync();
   renderMenu();
 }
 
