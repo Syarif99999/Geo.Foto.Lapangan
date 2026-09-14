@@ -1727,55 +1727,88 @@ async function saveEditOverlay(){
 /* ==========================================================================
    EKSPOR EXCEL & ZIP
    ========================================================================== */
-async function exportExcel(){
-  const entries = await getEntriesByCategory(currentCategory);
-  if(entries.length === 0){ showToast('Belum ada data untuk diekspor.'); return; }
+function exportPhotoFileName(en, index){
+  const dt = new Date(en.timestamp);
+  const stamp = dt.toISOString().replace(/[:.]/g,'-');
+  return `${String(index + 1).padStart(3,'0')}_${currentCategory}_${stamp}.jpg`;
+}
 
-  const rows = entries
-    .sort((a,b) => a.timestamp - b.timestamp)
-    .map((en, i) => ({
-      'No': i+1,
-      'Kategori': catLabel(en.category),
-      'Nama Usaha / Objek Pajak': en.businessName || '',
-      'Tanggal & Jam': fmtDate(en.timestamp),
-      'Latitude': en.lat,
-      'Longitude': en.lng,
-      'Sumber Koordinat': en.coordSource || '',
-      'Alamat Otomatis': en.addressAuto || '',
-      'Alamat Final': en.addressManual || en.addressAuto || '',
-      'Catatan Lapangan': en.note || '',
-      'Nama File Foto': en.fileName || '',
-      'Link Google Maps': { f: `HYPERLINK("https://www.google.com/maps?q=${en.lat},${en.lng}","Buka Peta")` }
-    }));
-
-  const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [
-    {wch:4},{wch:20},{wch:26},{wch:18},{wch:12},{wch:12},{wch:24},
-    {wch:40},{wch:40},{wch:32},{wch:22},{wch:14}
+function buildExportWorkbook(entries, photoFolder){
+  const headers = [
+    'No','Kategori','Nama Usaha / Objek Pajak','Tanggal & Jam','Latitude','Longitude',
+    'Koordinat','Sumber Koordinat','Alamat Otomatis','Alamat Final','Catatan Lapangan',
+    'Nama File Foto','Buka Foto','Buka Peta'
   ];
+  const rows = [headers];
+  entries.forEach((en, i) => {
+    const lat = Number(en.lat);
+    const lng = Number(en.lng);
+    const coord = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+    const photoName = exportPhotoFileName(en, i);
+    rows.push([
+      i + 1, catLabel(en.category), en.businessName || '', fmtDate(en.timestamp), lat, lng,
+      coord, en.coordSource || '', en.addressAuto || '', en.addressManual || en.addressAuto || '',
+      en.note || '', photoName, 'Buka Foto', 'Buka Peta'
+    ]);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [
+    {wch:4},{wch:20},{wch:26},{wch:20},{wch:13},{wch:13},{wch:23},{wch:24},
+    {wch:40},{wch:40},{wch:32},{wch:34},{wch:14},{wch:14}
+  ];
+  for(let r = 2; r <= rows.length; r++){
+    const entry = entries[r - 2];
+    const photoName = exportPhotoFileName(entry, r - 2);
+    const lat = Number(entry.lat), lng = Number(entry.lng);
+    const photoTarget = `${photoFolder}/${photoName}`;
+    const mapTarget = `https://www.google.com/maps?q=${encodeURIComponent(`${lat},${lng}`)}`;
+    ws[`M${r}`].l = { Target: photoTarget, Tooltip: 'Buka foto lapangan' };
+    ws[`N${r}`].l = { Target: mapTarget, Tooltip: 'Buka lokasi di Google Maps' };
+    ws[`M${r}`].s = { font: { color: { rgb: '0563C1' }, underline: true } };
+    ws[`N${r}`].s = { font: { color: { rgb: '0563C1' }, underline: true } };
+  }
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Data Foto Lapangan');
+  const info = XLSX.utils.aoa_to_sheet([
+    ['Petunjuk Ekspor Geo Foto Lapangan'],
+    ['Koordinat', 'Latitude dan longitude otomatis dari setiap data.'],
+    ['Buka Peta', 'Klik tautan untuk membuka lokasi di Google Maps.'],
+    ['Buka Foto', 'Tautan foto bekerja jika file Excel berada bersama folder foto hasil ekspor ZIP.']
+  ]);
+  info['!cols'] = [{wch:18},{wch:95}];
+  XLSX.utils.book_append_sheet(wb, info, 'Petunjuk');
+  return wb;
+}
+
+async function exportExcel(){
+  const entries = (await getEntriesByCategory(currentCategory)).sort((a,b) => a.timestamp - b.timestamp);
+  if(entries.length === 0){ showToast('Belum ada data untuk diekspor.'); return; }
+  const wb = buildExportWorkbook(entries, 'foto');
   const catSlug = currentCategory;
   const dateSlug = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `GeoFoto_${catSlug}_${dateSlug}.xlsx`);
-  showToast('Excel berhasil diunduh.');
+  showToast('Excel berhasil diunduh. Tautan peta aktif; tautan foto tersedia dalam paket ZIP.');
 }
 
 async function exportZip(){
-  const entries = await getEntriesByCategory(currentCategory);
+  const entries = (await getEntriesByCategory(currentCategory)).sort((a,b) => a.timestamp - b.timestamp);
   if(entries.length === 0){ showToast('Belum ada data untuk diekspor.'); return; }
-  showToast('Menyiapkan file ZIP, mohon tunggu...');
+  showToast('Menyiapkan paket ZIP lengkap, mohon tunggu...');
 
   const zip = new JSZip();
-  const folder = zip.folder(currentCategory);
-  entries
-    .sort((a,b) => a.timestamp - b.timestamp)
-    .forEach((en, i) => {
-      const dt = new Date(en.timestamp);
-      const stamp = dt.toISOString().replace(/[:.]/g,'-');
-      const name = `${String(i+1).padStart(3,'0')}_${currentCategory}_${stamp}.jpg`;
-      folder.file(name, en.photoBlob);
-    });
+  const root = zip.folder(currentCategory);
+  const photoFolderName = 'foto';
+  const photoFolder = root.folder(photoFolderName);
+  entries.forEach((en, i) => photoFolder.file(exportPhotoFileName(en, i), en.photoBlob));
+
+  const wb = buildExportWorkbook(entries, photoFolderName);
+  const workbookBytes = XLSX.write(wb, { bookType:'xlsx', type:'array' });
+  root.file(`GeoFoto_${currentCategory}.xlsx`, workbookBytes);
+  root.file('README.txt',
+    'Buka file Excel untuk melihat koordinat, membuka Google Maps, dan membuka foto.\n' +
+    'Jangan memindahkan file Excel tanpa folder foto agar tautan foto tetap bekerja.\n'
+  );
 
   const content = await zip.generateAsync({ type:'blob' });
   const url = URL.createObjectURL(content);
@@ -1786,7 +1819,7 @@ async function exportZip(){
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
-  showToast('ZIP foto berhasil diunduh.');
+  showToast('ZIP lengkap berhasil diunduh: Excel + foto + koordinat + tautan peta.');
 }
 
 /* ==========================================================================
