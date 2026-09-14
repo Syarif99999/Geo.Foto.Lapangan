@@ -1016,34 +1016,52 @@ function startCategoryCloudSync(catId){
     .onSnapshot(async (snapshot) => {
       try{
         const allLocal = await getAllEntries();
-        const existingCloudIds = new Set(
-          allLocal.filter(e => e.category === catId).map(e => e.cloudDocId).filter(Boolean)
+        const localByCloudId = new Map(
+          allLocal.filter(e => e.category === catId)
+            .map(e => [e.cloudDocId || (e.cloudSynced === true ? String(e.id) : ''), e])
+            .filter(([cloudId]) => cloudId)
         );
-        let added = 0;
+        const cloudIds = new Set(snapshot.docs.map(doc => doc.id));
+        let added = 0, updated = 0, removed = 0;
         for(const doc of snapshot.docs){
-          if(existingCloudIds.has(doc.id)) continue; // sudah ada di HP ini (termasuk punya sendiri)
           const d = doc.data();
           let blob;
           try{ blob = dataURLToBlob(d.thumbDataUrl); }catch(e){ continue; }
-          await addEntry({
-            category: d.category || catId,
-            businessName: d.businessName || '',
-            lat: d.lat, lng: d.lng,
-            coordSource: 'Disinkron otomatis dari cloud',
-            addressAuto: d.address || '',
-            addressManual: d.address || '',
-            note: d.note || '',
-            timestamp: d.timestamp || Date.now(),
-            photoBlob: blob,
-            thumbBlob: blob,
-            fileName: `cloud_${doc.id}.jpg`,
-            cloudSynced: true,
-            cloudDocId: doc.id
-          });
-          existingCloudIds.add(doc.id);
-          added++;
+          const local = localByCloudId.get(doc.id);
+          if(local){
+            // Data yang sedang berada di Sampah jangan dihidupkan kembali oleh
+            // listener; cukup pertahankan status sampah lokalnya.
+            if(local.deleted === true) continue;
+            await updateEntry(local.id, {
+              category: d.category || catId,
+              businessName: d.businessName || '', lat: d.lat, lng: d.lng,
+              addressAuto: d.address || '', addressManual: d.address || '',
+              note: d.note || '', timestamp: d.timestamp || Date.now(),
+              thumbBlob: blob, cloudSynced: true, cloudDocId: doc.id
+            });
+            updated++;
+          } else {
+            await addEntry({
+              category: d.category || catId, businessName: d.businessName || '',
+              lat: d.lat, lng: d.lng, coordSource: 'Disinkron otomatis dari cloud',
+              addressAuto: d.address || '', addressManual: d.address || '',
+              note: d.note || '', timestamp: d.timestamp || Date.now(),
+              photoBlob: blob, thumbBlob: blob, fileName: `cloud_${doc.id}.jpg`,
+              cloudSynced: true, cloudDocId: doc.id
+            });
+            added++;
+          }
         }
-        if(added > 0){
+        // Dokumen yang dihapus permanen dari cloud juga dihapus dari daftar
+        // lokal. Data yang sudah ada di Sampah sengaja dipertahankan sebagai
+        // riwayat lokal dan tidak ditarik kembali.
+        for(const [cloudId, local] of localByCloudId){
+          if(!cloudIds.has(cloudId) && local.deleted !== true){
+            await deleteEntry(local.id);
+            removed++;
+          }
+        }
+        if(added > 0 || updated > 0 || removed > 0){
           refreshMenuBadge(catId);
           if(currentTab === 'list' && currentCategory === catId) renderList();
           if(currentTab === 'map' && currentCategory === catId && typeof renderOverviewMap === 'function') renderOverviewMap();
@@ -1075,7 +1093,7 @@ async function restoreFromCloud(){
     // Cek termasuk yang ada di Sampah juga, supaya data yang baru dihapus (belum lewat 30 hari)
     // tidak ditarik ulang jadi dobel oleh "Pulihkan dari Cloud".
     const localEntries = allLocal.filter(e => e.category === currentCategory);
-    const existingCloudIds = new Set(localEntries.map(e => e.cloudDocId).filter(Boolean));
+    const existingCloudIds = new Set(localEntries.map(e => e.cloudDocId || (e.cloudSynced === true ? String(e.id) : '')).filter(Boolean));
 
     let restored = 0;
     for(const doc of snapshot.docs){
@@ -1409,11 +1427,14 @@ let listObjectUrls = [];
 let batchMode = false;
 let selectedIds = new Set();
 let viewingTrash = false;
+let trashSelectMode = false;
 
 function toggleBatchMode(){
   batchMode = !batchMode;
   selectedIds.clear();
+  trashSelectMode = false;
   document.getElementById('btnBatchMode').textContent = batchMode ? '✕ Batal Pilih' : '☑️ Pilih Banyak';
+  document.getElementById('btnBatchShare').textContent = '📤 Bagikan Terpilih';
   document.getElementById('batchBar').style.display = batchMode ? 'flex' : 'none';
   document.getElementById('entryList').style.paddingBottom = batchMode ? '80px' : '0';
   updateBatchBar();
@@ -1422,8 +1443,13 @@ function toggleBatchMode(){
 
 function toggleTrashView(){
   viewingTrash = !viewingTrash;
+  trashSelectMode = false;
+  selectedIds.clear();
   document.getElementById('btnViewTrash').textContent = viewingTrash ? '⬅ Kembali ke Daftar' : '🗑️ Sampah';
   document.getElementById('btnBatchMode').style.display = viewingTrash ? 'none' : 'inline-block';
+  document.getElementById('btnTrashSelect').style.display = viewingTrash ? 'inline-block' : 'none';
+  document.getElementById('btnTrashSelect').textContent = '☑️ Tandai Data';
+  document.getElementById('btnEmptyTrash').style.display = viewingTrash ? 'inline-block' : 'none';
   document.getElementById('btnRestoreCloud').style.display = viewingTrash ? 'none' : 'inline-block';
   const btnForceSyncEl = document.getElementById('btnForceSync');
   if(btnForceSyncEl) btnForceSyncEl.style.display = viewingTrash ? 'none' : 'inline-block';
@@ -1434,6 +1460,17 @@ function toggleTrashView(){
 
 function updateBatchBar(){
   document.getElementById('batchCount').textContent = `${selectedIds.size} dipilih`;
+}
+
+function toggleTrashSelectMode(){
+  trashSelectMode = !trashSelectMode;
+  selectedIds.clear();
+  document.getElementById('btnTrashSelect').textContent = trashSelectMode ? '✕ Batal Tandai' : '☑️ Tandai Data';
+  document.getElementById('batchBar').style.display = trashSelectMode ? 'flex' : 'none';
+  document.getElementById('btnBatchShare').style.display = trashSelectMode ? 'inline-block' : '';
+  document.getElementById('btnBatchShare').textContent = '❌ Hapus Permanen Terpilih';
+  updateBatchBar();
+  renderList();
 }
 
 async function renderList(){
@@ -1487,7 +1524,7 @@ async function renderList(){
     }
 
     card.innerHTML = `
-      ${(batchMode && !viewingTrash) ? `<input type="checkbox" class="entry-checkbox" data-id="${en.id}" ${isSelected ? 'checked' : ''}>` : ''}
+      ${((batchMode && !viewingTrash) || (trashSelectMode && viewingTrash)) ? `<input type="checkbox" class="entry-checkbox" data-id="${en.id}" ${isSelected ? 'checked' : ''}>` : ''}
       <img class="entry-thumb" src="${thumbUrl}" data-id="${en.id}" alt="Foto">
       <div class="entry-body">
         ${en.businessName ? `<div class="entry-business">${escapeHtml(en.businessName)}</div>` : ''}
@@ -1506,6 +1543,22 @@ async function renderList(){
     container.querySelectorAll('[data-act="purge"]').forEach(btn => {
       btn.addEventListener('click', () => permanentlyDeleteEntry(parseInt(btn.dataset.id, 10)));
     });
+    if(trashSelectMode){
+      const toggleSelect = (id) => {
+        if(selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
+        updateBatchBar();
+        renderList();
+      };
+      container.querySelectorAll('.entry-checkbox').forEach(cb => {
+        cb.addEventListener('click', (e) => { e.stopPropagation(); toggleSelect(parseInt(cb.dataset.id, 10)); });
+      });
+      container.querySelectorAll('.entry-card').forEach(card => {
+        card.addEventListener('click', (e) => {
+          if(e.target.closest('.entry-checkbox') || e.target.closest('[data-act]')) return;
+          toggleSelect(parseInt(card.querySelector('.entry-checkbox').dataset.id, 10));
+        });
+      });
+    }
     return;
   }
 
@@ -1556,14 +1609,23 @@ async function renderList(){
 
 async function onDeleteEntry(id){
   if(!confirm('Pindahkan foto ini ke Sampah? Masih bisa dipulihkan kapan saja selama 30 hari lewat menu "Sampah".')) return;
-  await updateEntry(id, { deleted:true, deletedAt: Date.now() });
+  const entry = await getEntry(id);
+  await updateEntry(id, { deleted:true, deletedAt: Date.now(), cloudSynced:false });
+  if(entry) await deleteEntryFromCloud(getStableCloudDocId(entry));
   showToast('Foto dipindahkan ke Sampah.');
   renderList();
   refreshMenuBadge(currentCategory);
 }
 
 async function restoreFromTrash(id){
+  const entry = await getEntry(id);
   await updateEntry(id, { deleted:false, deletedAt:null });
+  if(entry && firebaseReady && navigator.onLine){
+    const fresh = await getEntry(id);
+    const cloudId = getStableCloudDocId(fresh);
+    const synced = await syncEntryToCloud(cloudId, fresh);
+    await updateEntry(id, { cloudSynced:synced, cloudDocId:cloudId });
+  }
   showToast('Foto dipulihkan dari Sampah.');
   renderList();
   refreshMenuBadge(currentCategory);
@@ -1575,9 +1637,38 @@ async function permanentlyDeleteEntry(id){
   await deleteEntry(id);
   // Penting: hapus dari cloud pakai cloudDocId (bukan id lokal), karena untuk data
   // hasil "Pulihkan dari Cloud", id lokal berbeda dengan id dokumen di Firestore.
-  const cloudId = (entry && entry.cloudDocId) ? entry.cloudDocId : makeCloudDocId(id);
-  deleteEntryFromCloud(cloudId);
+  const cloudId = entry ? getStableCloudDocId(entry) : makeCloudDocId(id);
+  await deleteEntryFromCloud(cloudId);
   showToast('Foto dihapus permanen.');
+  renderList();
+  refreshMenuBadge(currentCategory);
+}
+
+async function permanentlyDeleteSelectedTrash(){
+  if(selectedIds.size === 0){ showToast('Tandai minimal 1 data di Sampah.'); return; }
+  if(!confirm(`Hapus permanen ${selectedIds.size} data yang ditandai? Tindakan ini tidak bisa dibatalkan.`)) return;
+  const ids = Array.from(selectedIds);
+  for(const id of ids){
+    const entry = await getEntry(id);
+    if(entry) await deleteEntry(id);
+    if(entry) await deleteEntryFromCloud(getStableCloudDocId(entry));
+  }
+  selectedIds.clear();
+  showToast(`${ids.length} data dihapus permanen.`);
+  renderList();
+  refreshMenuBadge(currentCategory);
+}
+
+async function permanentlyDeleteAllTrash(){
+  const entries = await getTrashByCategory(currentCategory);
+  if(entries.length === 0){ showToast('Sampah sudah kosong.'); return; }
+  if(!confirm(`Hapus permanen SEMUA ${entries.length} data di Sampah kategori ini? Tindakan ini tidak bisa dibatalkan.`)) return;
+  for(const entry of entries){
+    await deleteEntry(entry.id);
+    await deleteEntryFromCloud(getStableCloudDocId(entry));
+  }
+  selectedIds.clear();
+  showToast(`${entries.length} data di Sampah dihapus permanen.`);
   renderList();
   refreshMenuBadge(currentCategory);
 }
@@ -1752,9 +1843,12 @@ function goToCategory(catId){
   batchMode = false;
   selectedIds.clear();
   viewingTrash = false;
+  trashSelectMode = false;
   document.getElementById('batchBar').style.display = 'none';
   document.getElementById('btnBatchMode').textContent = '☑️ Pilih Banyak';
   document.getElementById('btnViewTrash').textContent = '🗑️ Sampah';
+  document.getElementById('btnTrashSelect').style.display = 'none';
+  document.getElementById('btnEmptyTrash').style.display = 'none';
   document.getElementById('btnBatchMode').style.display = 'inline-block';
   document.getElementById('btnRestoreCloud').style.display = 'inline-block';
   const btnForceSyncEl2 = document.getElementById('btnForceSync');
@@ -1836,8 +1930,14 @@ window.addEventListener('DOMContentLoaded', () => {
   const btnForceSync = document.getElementById('btnForceSync');
   if(btnForceSync) btnForceSync.addEventListener('click', forceResyncAll);
   document.getElementById('btnBatchMode').addEventListener('click', toggleBatchMode);
-  document.getElementById('btnBatchShare').addEventListener('click', onBatchShare);
-  document.getElementById('btnBatchCancel').addEventListener('click', toggleBatchMode);
+  document.getElementById('btnBatchCancel').addEventListener('click', () => {
+    if(trashSelectMode) toggleTrashSelectMode(); else toggleBatchMode();
+  });
+  document.getElementById('btnTrashSelect').addEventListener('click', toggleTrashSelectMode);
+  document.getElementById('btnEmptyTrash').addEventListener('click', permanentlyDeleteAllTrash);
+  document.getElementById('btnBatchShare').addEventListener('click', () => {
+    if(trashSelectMode) permanentlyDeleteSelectedTrash(); else onBatchShare();
+  });
   document.getElementById('btnViewTrash').addEventListener('click', toggleTrashView);
   document.getElementById('btnShareLastSaved').addEventListener('click', () => {
     if(lastSavedEntryId != null) shareEntry(lastSavedEntryId);
