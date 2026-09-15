@@ -547,9 +547,12 @@ async function processQueueItem(){
   }catch(e){ exif = null; }
 
   const orientation = (exif && exif.orientation) || 1;
+  // Simpan foto utama dengan resolusi tinggi agar hasil share ke WhatsApp tidak
+  // terlihat pecah. Thumbnail tetap kecil karena hanya dipakai untuk daftar,
+  // popup peta, dan sinkronisasi cloud publik.
   const [photoBlob, thumbBlob] = await Promise.all([
-    compressImage(item.file, orientation, 1600, 0.75),
-    compressImage(item.file, orientation, 260, 0.6)
+    compressImage(item.file, orientation, 2560, 0.92),
+    compressImage(item.file, orientation, 320, 0.78)
   ]);
 
   let lat = null, lng = null, coordSource = null;
