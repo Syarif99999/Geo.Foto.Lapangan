@@ -1285,6 +1285,43 @@ function fitSingleLineFontSize(ctx, text, size, family, weight, maxWidth, minSiz
   return s;
 }
 
+async function loadSatelliteMapCrop(lat, lng, zoom, size){
+  if(lat == null || lng == null || !isFinite(lat) || !isFinite(lng)) return null;
+  const n = Math.pow(2, zoom);
+  const worldX = (lng + 180) / 360 * n;
+  const latRad = lat * Math.PI / 180;
+  const worldY = (1 - Math.asinh(Math.tan(latRad)) / Math.PI) / 2 * n;
+  const tileX = Math.floor(worldX);
+  const tileY = Math.floor(worldY);
+  const fracX = worldX - tileX;
+  const fracY = worldY - tileY;
+  const tileSize = 256;
+  const mosaic = document.createElement('canvas');
+  mosaic.width = tileSize * 3; mosaic.height = tileSize * 3;
+  const mctx = mosaic.getContext('2d');
+  const loadTile = (x, y) => new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${y}/${((x % n) + n) % n}`;
+  });
+  try{
+    for(let dy = -1; dy <= 1; dy++){
+      for(let dx = -1; dx <= 1; dx++){
+        const tile = await loadTile(tileX + dx, tileY + dy);
+        mctx.drawImage(tile, (dx+1)*tileSize, (dy+1)*tileSize, tileSize, tileSize);
+      }
+    }
+    const cropX = tileSize + fracX*tileSize - size/2;
+    const cropY = tileSize + fracY*tileSize - size/2;
+    return { canvas:mosaic, sx:cropX, sy:cropY, sw:size, sh:size };
+  }catch(e){
+    console.warn('Citra satelit untuk stempel tidak tersedia:', e);
+    return null;
+  }
+}
+
 async function generateStampedPhoto(entry){
   const img = await new Promise((resolve, reject) => {
     const image = new Image();
@@ -1398,20 +1435,18 @@ async function generateStampedPhoto(entry){
   ctx.save();
   roundRectPath(ctx, mapBoxX, mapBoxY, mapBoxSize, mapBoxSize, base*0.014);
   ctx.clip();
-  const mgrad = ctx.createLinearGradient(mapBoxX, mapBoxY, mapBoxX+mapBoxSize, mapBoxY+mapBoxSize);
-  mgrad.addColorStop(0, '#7c8f6e');
-  mgrad.addColorStop(0.5, '#8f9c78');
-  mgrad.addColorStop(1, '#6b7d5c');
-  ctx.fillStyle = mgrad;
-  ctx.fillRect(mapBoxX, mapBoxY, mapBoxSize, mapBoxSize);
-  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-  ctx.lineWidth = Math.max(1, mapBoxSize*0.012);
-  ctx.beginPath();
-  ctx.moveTo(mapBoxX, mapBoxY + mapBoxSize*0.32);
-  ctx.lineTo(mapBoxX + mapBoxSize, mapBoxY + mapBoxSize*0.58);
-  ctx.moveTo(mapBoxX + mapBoxSize*0.22, mapBoxY);
-  ctx.lineTo(mapBoxX + mapBoxSize*0.62, mapBoxY + mapBoxSize);
-  ctx.stroke();
+  const satCrop = await loadSatelliteMapCrop(entry.lat, entry.lng, 17, mapBoxSize);
+  if(satCrop){
+    ctx.drawImage(satCrop.canvas, satCrop.sx, satCrop.sy, satCrop.sw, satCrop.sh,
+      mapBoxX, mapBoxY, mapBoxSize, mapBoxSize);
+  } else {
+    const mgrad = ctx.createLinearGradient(mapBoxX, mapBoxY, mapBoxX+mapBoxSize, mapBoxY+mapBoxSize);
+    mgrad.addColorStop(0, '#7c8f6e');
+    mgrad.addColorStop(0.5, '#8f9c78');
+    mgrad.addColorStop(1, '#6b7d5c');
+    ctx.fillStyle = mgrad;
+    ctx.fillRect(mapBoxX, mapBoxY, mapBoxSize, mapBoxSize);
+  }
 
   // efek "spread" biru khas GPS di bawah pin
   const pinTipX = mapBoxX + mapBoxSize*0.5;
