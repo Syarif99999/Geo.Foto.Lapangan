@@ -547,12 +547,13 @@ async function processQueueItem(){
   }catch(e){ exif = null; }
 
   const orientation = (exif && exif.orientation) || 1;
-  // Simpan foto utama dengan resolusi tinggi agar hasil share ke WhatsApp tidak
-  // terlihat pecah. Thumbnail tetap kecil karena hanya dipakai untuk daftar,
-  // popup peta, dan sinkronisasi cloud publik.
+  // Pertahankan resolusi asli (hingga 4K) dan gunakan kualitas sangat tinggi.
+  // Downscale/quality rendah di sini membuat foto yang dibagikan terlihat pecah,
+  // terutama setelah WhatsApp melakukan kompresi tambahannya. Thumbnail tetap
+  // dibuat terpisah karena hanya dipakai untuk daftar, peta, dan cloud publik.
   const [photoBlob, thumbBlob] = await Promise.all([
-    compressImage(item.file, orientation, 2560, 0.92),
-    compressImage(item.file, orientation, 320, 0.78)
+    compressImage(item.file, orientation, 4096, 0.98),
+    compressImage(item.file, orientation, 480, 0.85)
   ]);
 
   let lat = null, lng = null, coordSource = null;
@@ -1383,7 +1384,10 @@ async function generateStampedPhoto(entry){
     textY += l.size * lineSpacing;
   });
 
-  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+  // Stempel dibuat pada kanvas berukuran sama dengan foto sumber dan hanya
+  // memakai satu kali encoding JPEG dengan kualitas tinggi agar detail wajah,
+  // tulisan, dan tekstur bangunan tetap tajam saat dibagikan.
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.98));
 }
 
 async function shareEntry(id, withStamp){
