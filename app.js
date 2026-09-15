@@ -515,10 +515,12 @@ let qIndex = 0;
 let currentDraft = null;
 let geocodeDebounce = null;
 let lastSavedEntryId = null;
+let sharedLocationData = null;
 
 function startQueue(fileList, source){
   queue = Array.from(fileList).map(f => ({ file:f, source }));
   qIndex = 0;
+  sharedLocationData = null;
   document.getElementById('lastSavedBar').style.display = 'none';
   document.getElementById('reviewPanel').style.display = 'block';
   document.getElementById('reviewPanel').scrollIntoView({ behavior:'smooth', block:'start' });
@@ -584,6 +586,22 @@ async function processQueueItem(){
   updateCoordBox();
   initReviewMap(lat, lng);
   setReviewLoading(false);
+
+  // Foto berikutnya memakai data lokasi yang sama setelah pengguna memilih
+  // "Simpan lokasi ini untuk semua foto"; setiap foto tetap menjadi entri terpisah.
+  if(sharedLocationData && qIndex > 0){
+    currentDraft.lat = sharedLocationData.lat;
+    currentDraft.lng = sharedLocationData.lng;
+    currentDraft.coordSource = sharedLocationData.coordSource;
+    currentDraft.addressAuto = sharedLocationData.addressAuto;
+    document.getElementById('businessNameInput').value = sharedLocationData.businessName;
+    document.getElementById('addrAuto').value = sharedLocationData.addressAuto;
+    document.getElementById('addrManual').value = sharedLocationData.addressManual;
+    document.getElementById('noteInput').value = sharedLocationData.note;
+    updateCoordBox();
+    setTimeout(() => saveDraftAndAdvance(sharedLocationData), 0);
+    return;
+  }
 
   if(lat != null && lng != null){
     autoReverseGeocode();
@@ -712,22 +730,32 @@ async function onLocateNowClick(){
   btn.disabled = false; btn.textContent = '📍 Gunakan Lokasi Saat Ini';
 }
 
-async function onSaveDraft(){
+function readDraftLocationData(){
+  return {
+    lat: currentDraft.lat,
+    lng: currentDraft.lng,
+    coordSource: currentDraft.coordSource || 'Manual',
+    addressAuto: currentDraft.addressAuto || '',
+    addressManual: document.getElementById('addrManual').value.trim() || currentDraft.addressAuto || '',
+    note: document.getElementById('noteInput').value.trim(),
+    businessName: document.getElementById('businessNameInput').value.trim()
+  };
+}
+
+async function saveDraftAndAdvance(data){
   if(!currentDraft || currentDraft.lat == null || currentDraft.lng == null){
     showToast('Tandai lokasi terlebih dahulu di peta.');
     return;
   }
-  const addrManual = document.getElementById('addrManual').value.trim();
-  const note = document.getElementById('noteInput').value.trim();
-  const businessName = document.getElementById('businessNameInput').value.trim();
+  data = data || readDraftLocationData();
   const entry = {
     category: currentCategory,
-    businessName: businessName,
-    lat: currentDraft.lat, lng: currentDraft.lng,
-    coordSource: currentDraft.coordSource || 'Manual',
-    addressAuto: currentDraft.addressAuto || '',
-    addressManual: addrManual || currentDraft.addressAuto || '',
-    note: note,
+    businessName: data.businessName,
+    lat: data.lat, lng: data.lng,
+    coordSource: data.coordSource,
+    addressAuto: data.addressAuto,
+    addressManual: data.addressManual,
+    note: data.note,
     timestamp: Date.now(),
     photoBlob: currentDraft.photoBlob,
     thumbBlob: currentDraft.thumbBlob,
@@ -750,13 +778,32 @@ async function onSaveDraft(){
   refreshMenuBadge(currentCategory);
 }
 
+async function onSaveDraft(){
+  await saveDraftAndAdvance();
+}
+
+async function onSaveAllDrafts(){
+  if(!currentDraft || currentDraft.lat == null || currentDraft.lng == null){
+    showToast('Tandai lokasi terlebih dahulu di peta.');
+    return;
+  }
+  if(queue.length - qIndex <= 1){
+    showToast('Antrean hanya berisi satu foto.');
+    await saveDraftAndAdvance();
+    return;
+  }
+  sharedLocationData = readDraftLocationData();
+  showToast(`Lokasi dipakai untuk ${queue.length - qIndex} foto...`);
+  await saveDraftAndAdvance(sharedLocationData);
+}
+
 function onSkipDraft(){
   qIndex++;
   processQueueItem();
 }
 
 function onCancelQueue(){
-  queue = []; qIndex = 0; currentDraft = null;
+  queue = []; qIndex = 0; currentDraft = null; sharedLocationData = null;
   document.getElementById('reviewPanel').style.display = 'none';
   if(reviewMap){ reviewMap.remove(); reviewMap = null; }
 }
@@ -765,7 +812,7 @@ function endQueue(){
   document.getElementById('reviewPanel').style.display = 'none';
   if(reviewMap){ reviewMap.remove(); reviewMap = null; }
   showToast('Selesai memproses semua foto.');
-  queue = []; qIndex = 0; currentDraft = null;
+  queue = []; qIndex = 0; currentDraft = null; sharedLocationData = null;
   if(currentTab === 'list') renderList();
 }
 
@@ -1014,7 +1061,10 @@ let categoryCloudUnsub = null;
 
 function startCategoryCloudSync(catId){
   stopCategoryCloudSync();
-  if(!firebaseReady) return;
+  if(!firebaseReady){
+    console.warn('Sinkronisasi kategori dilewati: Firebase belum siap.');
+    return;
+  }
   categoryCloudUnsub = firestoreDB.collection(FIRESTORE_COLLECTION)
     .where('category', '==', catId)
     .onSnapshot(async (snapshot) => {
@@ -1073,7 +1123,10 @@ function startCategoryCloudSync(catId){
       }catch(e){
         console.warn('Gagal sinkron real-time kategori:', e);
       }
-    }, (err) => console.warn('Listener cloud kategori error:', err));
+    }, (err) => {
+      console.warn('Listener cloud kategori error:', err);
+      showToast('Sinkronisasi cloud terputus. Cek internet lalu tekan Pulihkan dari Cloud.');
+    });
 }
 
 function stopCategoryCloudSync(){
@@ -1935,6 +1988,10 @@ function goToMenu(){
 function switchTab(tab){
   currentTab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  if(currentCategory && navigator.onLine){
+    retryPendingCloudSync();
+    if(tab === 'list') startCategoryCloudSync(currentCategory);
+  }
   document.getElementById('tabCapture').classList.toggle('active', tab === 'capture');
   document.getElementById('tabList').classList.toggle('active', tab === 'list');
   document.getElementById('tabMap').classList.toggle('active', tab === 'map');
@@ -1966,6 +2023,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btnLocateNow').addEventListener('click', onLocateNowClick);
   document.getElementById('btnSaveQ').addEventListener('click', onSaveDraft);
+  document.getElementById('btnSaveAllQ').addEventListener('click', onSaveAllDrafts);
   document.getElementById('btnSkipQ').addEventListener('click', onSkipDraft);
   document.getElementById('btnCancelQ').addEventListener('click', onCancelQueue);
 
