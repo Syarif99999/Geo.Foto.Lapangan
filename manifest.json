@@ -1,7 +1,7 @@
 {
   "name": "Geo Foto Lapangan - BAPENDA Paser",
   "short_name": "Geo Foto",
-  "description": "Aplikasi dokumentasi foto lapangan dengan koordinat GPS otomatis untuk pendataan pajak daerah BAPENDA Kabupaten Paser.",
+  "description": "Aplikasi dokumentasi foto dan video lapangan dengan koordinat GPS otomatis untuk pendataan pajak daerah BAPENDA Kabupaten Paser.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

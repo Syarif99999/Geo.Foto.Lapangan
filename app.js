@@ -518,7 +518,7 @@ let lastSavedEntryId = null;
 let sharedLocationData = null;
 
 function startQueue(fileList, source){
-  queue = Array.from(fileList).map(f => ({ file:f, source }));
+  queue = Array.from(fileList).map(f => ({ file:f, source, mediaType: f.type && f.type.startsWith('video/') ? 'video' : 'photo' }));
   qIndex = 0;
   sharedLocationData = null;
   document.getElementById('lastSavedBar').style.display = 'none';
@@ -536,11 +536,18 @@ function setReviewLoading(isLoading, text){
 async function processQueueItem(){
   if(qIndex >= queue.length){ endQueue(); return; }
   const item = queue[qIndex];
-  document.getElementById('reviewProgress').textContent = `Foto ${qIndex+1} dari ${queue.length} — ${item.source === 'camera' ? 'Kamera Langsung' : 'Impor Galeri/WA'}`;
-  setReviewLoading(true, 'Membaca metadata & memproses foto...');
+  const mediaLabel = item.mediaType === 'video' ? 'Video' : 'Foto';
+  document.getElementById('reviewProgress').textContent = `${mediaLabel} ${qIndex+1} dari ${queue.length} — ${item.source === 'camera' ? 'Kamera Langsung' : 'Impor Galeri/WA'}`;
+  setReviewLoading(true, item.mediaType === 'video' ? 'Menyiapkan video...' : 'Membaca metadata & memproses foto...');
 
   const previewUrl = URL.createObjectURL(item.file);
-  document.getElementById('reviewPhoto').src = previewUrl;
+  const photoPreview = document.getElementById('reviewPhoto');
+  const videoPreview = document.getElementById('reviewVideo');
+  const typeBadge = document.getElementById('reviewMediaType');
+  typeBadge.textContent = item.mediaType === 'video' ? 'Video lapangan' : 'Foto lapangan';
+  photoPreview.style.display = item.mediaType === 'video' ? 'none' : 'block';
+  videoPreview.style.display = item.mediaType === 'video' ? 'block' : 'none';
+  if(item.mediaType === 'video') videoPreview.src = previewUrl; else photoPreview.src = previewUrl;
 
   let exif = null;
   try{
@@ -549,6 +556,17 @@ async function processQueueItem(){
   }catch(e){ exif = null; }
 
   const orientation = (exif && exif.orientation) || 1;
+  if(item.mediaType === 'video') {
+    let lat = null, lng = null, coordSource = null;
+    if(item.source === 'camera') {
+      try { const pos = await getCurrentPositionAsync(); lat=pos.coords.latitude; lng=pos.coords.longitude; coordSource=`GPS perangkat saat direkam (±${Math.round(pos.coords.accuracy)}m)`; } catch(e) {}
+    }
+    const poster = new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270"><rect width="100%" height="100%" fill="#0f2647"/><text x="50%" y="50%" fill="#e0b354" text-anchor="middle" dominant-baseline="middle" font-size="34">VIDEO</text></svg>`], {type:'image/svg+xml'});
+    currentDraft = { file:item.file, source:item.source, mediaType:'video', videoBlob:item.file, photoBlob:null, thumbBlob:poster, lat, lng, coordSource, addressAuto:'', addressManual:'' };
+    updateCoordBox(); initReviewMap(lat, lng); setReviewLoading(false);
+    if(lat != null && lng != null) autoReverseGeocode(); else document.getElementById('addrAuto').placeholder='GPS tidak ditemukan — tandai lokasi di peta atau isi manual';
+    return;
+  }
   // Pertahankan resolusi asli (hingga 4K) dan gunakan kualitas sangat tinggi.
   // Downscale/quality rendah di sini membuat foto yang dibagikan terlihat pecah,
   // terutama setelah WhatsApp melakukan kompresi tambahannya. Thumbnail tetap
@@ -573,7 +591,7 @@ async function processQueueItem(){
   }
 
   currentDraft = {
-    file: item.file, source: item.source,
+    file: item.file, source: item.source, mediaType:'photo',
     photoBlob, thumbBlob,
     lat, lng, coordSource,
     addressAuto: '', addressManual: ''
@@ -757,15 +775,18 @@ async function saveDraftAndAdvance(data){
     addressManual: data.addressManual,
     note: data.note,
     timestamp: Date.now(),
+    mediaType: currentDraft.mediaType || 'photo',
     photoBlob: currentDraft.photoBlob,
+    videoBlob: currentDraft.videoBlob,
     thumbBlob: currentDraft.thumbBlob,
-    fileName: (currentDraft.file && currentDraft.file.name) || `foto_${Date.now()}.jpg`,
+    fileName: (currentDraft.file && currentDraft.file.name) || `media_${Date.now()}.${currentDraft.mediaType === 'video' ? 'webm' : 'jpg'}`,
+    mimeType: currentDraft.file && currentDraft.file.type || '',
     // Kalau alamat otomatis belum berhasil didapat (mis. sedang offline),
     // tandai entri ini supaya dicoba ulang otomatis begitu koneksi kembali ada.
     geocodePending: !currentDraft.addressAuto
   };
   const localId = await addEntry(entry);
-  showToast('Foto tersimpan ✅');
+  showToast(`${entry.mediaType === 'video' ? 'Video' : 'Foto'} tersimpan ✅`);
   lastSavedEntryId = localId;
   document.getElementById('lastSavedBar').style.display = 'flex';
   const cloudDocId = makeCloudDocId(localId);
@@ -1482,12 +1503,14 @@ async function shareEntry(id, withStamp){
   if(withStamp === undefined) withStamp = true;
   const entry = await getEntry(id);
   if(!entry){ showToast('Data tidak ditemukan.'); return; }
-  showToast(withStamp ? 'Menyiapkan foto berkoordinat...' : 'Menyiapkan foto asli...');
+  showToast(entry.mediaType === 'video' ? 'Menyiapkan video...' : (withStamp ? 'Menyiapkan foto berkoordinat...' : 'Menyiapkan foto asli...'));
   try{
-    const photoBlob = withStamp ? await generateStampedPhoto(entry) : entry.photoBlob;
+    const mediaBlob = entry.mediaType === 'video' ? entry.videoBlob : (withStamp ? await generateStampedPhoto(entry) : entry.photoBlob);
+    const mime = entry.mediaType === 'video' ? (entry.mimeType || 'video/webm') : 'image/jpeg';
+    const ext = entry.mediaType === 'video' ? (mime.includes('mp4') ? 'mp4' : 'webm') : 'jpg';
     const safeName = (entry.businessName || catLabel(entry.category)).replace(/[^a-z0-9]+/gi, '_');
-    const fileName = `GeoFoto_${safeName}_${new Date(entry.timestamp).toISOString().slice(0,10)}.jpg`;
-    const file = new File([photoBlob], fileName, { type:'image/jpeg' });
+    const fileName = `GeoFoto_${safeName}_${new Date(entry.timestamp).toISOString().slice(0,10)}.${ext}`;
+    const file = new File([mediaBlob], fileName, { type:mime });
     let shared = false;
 
     if(navigator.canShare && navigator.canShare({ files:[file] })){
@@ -1620,7 +1643,7 @@ async function renderList(){
 
     card.innerHTML = `
       ${((batchMode && !viewingTrash) || (trashSelectMode && viewingTrash)) ? `<input type="checkbox" class="entry-checkbox" data-id="${en.id}" ${isSelected ? 'checked' : ''}>` : ''}
-      <img class="entry-thumb" src="${thumbUrl}" data-id="${en.id}" alt="Foto">
+      <div class="entry-thumb" data-id="${en.id}" style="display:flex;align-items:center;justify-content:center;font-size:1.8rem;background:${en.mediaType === 'video' ? '#0f2647' : '#eee'};color:${en.mediaType === 'video' ? '#e0b354' : 'inherit'}">${en.mediaType === 'video' ? '🎥' : '🖼️'}</div>
       <div class="entry-body">
         ${en.businessName ? `<div class="entry-business">${escapeHtml(en.businessName)}</div>` : ''}
         <div class="entry-addr">${escapeHtml(addr)}</div>
@@ -1773,12 +1796,17 @@ let photoOverlayUrl = null;
 async function openPhotoOverlay(id){
   const en = await getEntry(id);
   if(photoOverlayUrl) URL.revokeObjectURL(photoOverlayUrl);
-  photoOverlayUrl = URL.createObjectURL(en.photoBlob);
-  document.getElementById('photoOverlayImg').src = photoOverlayUrl;
+  const isVideo = en.mediaType === 'video';
+  const img = document.getElementById('photoOverlayImg');
+  const video = document.getElementById('photoOverlayVideo');
+  photoOverlayUrl = URL.createObjectURL(isVideo ? en.videoBlob : en.photoBlob);
+  img.style.display = isVideo ? 'none' : 'block'; video.style.display = isVideo ? 'block' : 'none';
+  if(isVideo) video.src = photoOverlayUrl; else img.src = photoOverlayUrl;
   document.getElementById('photoOverlay').classList.add('show');
 }
 function closePhotoOverlay(){
   document.getElementById('photoOverlay').classList.remove('show');
+  const video = document.getElementById('photoOverlayVideo'); if(video){ video.pause(); video.removeAttribute('src'); video.load(); }
 }
 
 /* ---- Edit entry ---- */
@@ -1825,7 +1853,8 @@ async function saveEditOverlay(){
 function exportPhotoFileName(en, index){
   const dt = new Date(en.timestamp);
   const stamp = dt.toISOString().replace(/[:.]/g,'-');
-  return `${String(index + 1).padStart(3,'0')}_${currentCategory}_${stamp}.jpg`;
+  const ext = en.mediaType === 'video' ? ((en.mimeType || '').includes('mp4') ? 'mp4' : 'webm') : 'jpg';
+  return `${String(index + 1).padStart(3,'0')}_${currentCategory}_${stamp}.${ext}`;
 }
 
 function buildExportWorkbook(entries, photoFolder){
@@ -1906,9 +1935,9 @@ async function exportZip(){
   const photoFolder = root.folder(photoFolderName);
   for(let i = 0; i < entries.length; i++){
     const en = entries[i];
-    let exportBlob = en.photoBlob || en.thumbBlob;
+    let exportBlob = en.mediaType === 'video' ? (en.videoBlob || en.thumbBlob) : (en.photoBlob || en.thumbBlob);
     try{
-      if(en.lat != null && en.lng != null && exportBlob){
+      if(en.mediaType !== 'video' && en.lat != null && en.lng != null && exportBlob){
         exportBlob = await generateStampedPhoto({ ...en, photoBlob: exportBlob });
       }
     }catch(err){
@@ -2045,6 +2074,8 @@ window.addEventListener('DOMContentLoaded', () => {
   purgeOldTrash();
 
   document.getElementById('btnCamera').addEventListener('click', () => document.getElementById('inputCamera').click());
+  document.getElementById('btnVideo').addEventListener('click', () => document.getElementById('inputVideo').click());
+  document.getElementById('btnImportVideo').addEventListener('click', () => document.getElementById('inputImportVideo').click());
   document.getElementById('btnImport').addEventListener('click', () => document.getElementById('inputImport').click());
 
   document.getElementById('inputCamera').addEventListener('change', (e) => {
@@ -2055,6 +2086,8 @@ window.addEventListener('DOMContentLoaded', () => {
     if(e.target.files.length) startQueue(e.target.files, 'import');
     e.target.value = '';
   });
+  document.getElementById('inputVideo').addEventListener('change', (e) => { if(e.target.files.length) startQueue(e.target.files, 'camera'); e.target.value=''; });
+  document.getElementById('inputImportVideo').addEventListener('change', (e) => { if(e.target.files.length) startQueue(e.target.files, 'import'); e.target.value=''; });
 
   document.getElementById('btnLocateNow').addEventListener('click', onLocateNowClick);
   document.getElementById('btnSaveQ').addEventListener('click', onSaveDraft);

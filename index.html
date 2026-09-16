@@ -117,7 +117,8 @@
 
   .review-panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;margin-top:6px;}
   .review-progress{font-size:.72rem;font-weight:700;color:var(--gold);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;}
-  .review-photo{width:100%;max-height:280px;object-fit:contain;border-radius:10px;background:#111;margin-bottom:10px;}
+  .review-photo,.review-video{width:100%;max-height:280px;object-fit:contain;border-radius:10px;background:#111;margin-bottom:10px;}
+  .media-type-badge{display:inline-block;font-size:.7rem;font-weight:800;color:var(--navy);background:#fdf3dd;border:1px solid #ead7a8;border-radius:20px;padding:4px 9px;margin-bottom:8px;}
   .coord-box{display:flex;align-items:center;gap:8px;background:var(--paper);border-radius:9px;padding:9px 11px;font-size:.76rem;margin-bottom:10px;}
   .coord-box.warn{background:#fbf1de;color:var(--amber);}
   .coord-box.ok{background:#eaf3ee;color:var(--green);}
@@ -262,7 +263,7 @@
   <div id="viewMenu">
     <div class="menu-intro">
       <h2>Pilih Jenis Objek Pajak</h2>
-      <p>Tap salah satu menu untuk mulai mengambil foto lapangan.</p>
+      <p>Tap salah satu menu untuk mulai mengambil foto atau video lapangan.</p>
     </div>
     <div class="menu-grid" id="menuGrid"></div>
   </div>
@@ -284,10 +285,14 @@
     <div class="tab-panel active" id="tabCapture">
       <div class="capture-actions">
         <button class="cap-btn" id="btnCamera"><span class="emj">📷</span>Ambil Foto Langsung</button>
-        <button class="cap-btn alt" id="btnImport"><span class="emj">🖼️</span>Impor dari Galeri / WA</button>
+        <button class="cap-btn alt" id="btnVideo"><span class="emj">🎥</span>Rekam Video</button>
+        <button class="cap-btn alt" id="btnImport"><span class="emj">🖼️</span>Impor Foto dari Galeri / WA</button>
+        <button class="cap-btn alt" id="btnImportVideo"><span class="emj">📼</span>Impor Video</button>
       </div>
       <input type="file" id="inputCamera" accept="image/*" capture="environment" hidden>
+      <input type="file" id="inputVideo" accept="video/*" capture="environment" hidden>
       <input type="file" id="inputImport" accept="image/*" multiple hidden>
+      <input type="file" id="inputImportVideo" accept="video/*" multiple hidden>
       <div class="hint">📌 Foto langsung otomatis mengunci koordinat GPS saat itu juga. Foto impor akan dibaca data GPS dari EXIF bila tersedia (foto asli kamera biasanya punya, foto kiriman WhatsApp biasanya sudah terhapus GPS-nya) — jika tidak ditemukan, tandai lokasi manual di peta atau pakai tombol "Gunakan Lokasi Saat Ini".</div>
 
       <div class="last-saved-bar" id="lastSavedBar" style="display:none;">
@@ -297,7 +302,9 @@
 
       <div class="review-panel" id="reviewPanel" style="display:none;">
         <div class="review-progress" id="reviewProgress"></div>
+        <div class="media-type-badge" id="reviewMediaType">Foto</div>
         <img class="review-photo" id="reviewPhoto" alt="Pratinjau foto">
+        <video class="review-video" id="reviewVideo" controls playsinline style="display:none" aria-label="Pratinjau video"></video>
         <div id="reviewLoading" class="loading-inline" style="display:none;"><span class="spinner"></span><span id="reviewLoadingText">Memproses...</span></div>
         <div id="reviewContent" style="display:none;">
           <div class="field-group">
@@ -375,6 +382,7 @@
 <div class="overlay" id="photoOverlay">
   <button class="overlay-close" onclick="closePhotoOverlay()">✕</button>
   <img class="full" id="photoOverlayImg" alt="Foto lapangan">
+  <video class="full" id="photoOverlayVideo" controls playsinline style="display:none" aria-label="Video lapangan"></video>
 </div>
 
 <!-- Edit overlay -->
@@ -418,8 +426,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
 
 <script src="app.js"></script>
