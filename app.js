@@ -782,6 +782,15 @@ function closeLiveRecordModal(){
   document.getElementById('btnStopLiveRecord').style.display = 'none';
 }
 async function openLiveRecordModal(){
+  const fallbackToDeviceCamera = () => {
+    closeLiveRecordModal();
+    showToast('Mode kamera live tidak tersedia — membuka kamera HP.');
+    setTimeout(() => document.getElementById('inputVideo').click(), 120);
+  };
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    fallbackToDeviceCamera();
+    return;
+  }
   const modal = document.getElementById('liveRecordModal');
   const video = document.getElementById('liveCameraPreview');
   modal.classList.add('show');
@@ -804,7 +813,8 @@ async function openLiveRecordModal(){
     }
     setLiveGpsStatus('Kamera siap. GPS akan diperbarui setiap detik setelah tersedia.');
   }catch(e){
-    setLiveGpsStatus('Kamera tidak dapat dibuka. Pastikan aplikasi dibuka melalui HTTPS dan izin kamera aktif.');
+    console.warn('Mode kamera live gagal, gunakan kamera perangkat:', e);
+    fallbackToDeviceCamera();
   }
 }
 function drawLiveStamp(ctx, canvas, video){
@@ -816,7 +826,12 @@ function drawLiveStamp(ctx, canvas, video){
   ctx.fillStyle='#e0b354'; ctx.font=`700 ${Math.max(14,Math.round(canvas.width*.018))}px Arial`; ctx.textBaseline='middle'; ctx.fillText(text,pad,canvas.height-lineH/2-pad);
 }
 async function startLiveRecording(){
-  if(!liveStream) return;
+  if(!liveStream){
+    showToast('Kamera live belum siap — gunakan kamera HP.');
+    closeLiveRecordModal();
+    setTimeout(() => document.getElementById('inputVideo').click(), 120);
+    return;
+  }
   const video=document.getElementById('liveCameraPreview'), canvas=document.getElementById('liveStampCanvas');
   canvas.width=video.videoWidth||1280; canvas.height=video.videoHeight||720;
   const ctx=canvas.getContext('2d'), composite=canvas.captureStream(30);
