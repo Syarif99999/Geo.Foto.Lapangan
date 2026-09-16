@@ -562,7 +562,7 @@ async function processQueueItem(){
       try { const pos = await getCurrentPositionAsync(); lat=pos.coords.latitude; lng=pos.coords.longitude; coordSource=`GPS perangkat saat direkam (±${Math.round(pos.coords.accuracy)}m)`; } catch(e) {}
     }
     const poster = new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270"><rect width="100%" height="100%" fill="#0f2647"/><text x="50%" y="50%" fill="#e0b354" text-anchor="middle" dominant-baseline="middle" font-size="34">VIDEO</text></svg>`], {type:'image/svg+xml'});
-    currentDraft = { file:item.file, source:item.source, mediaType:'video', videoBlob:item.file, photoBlob:null, thumbBlob:poster, lat, lng, coordSource, addressAuto:'', addressManual:'' };
+    currentDraft = { file:item.file, source:item.source, mediaType:'video', videoBlob:item.file, stampedVideoBlob:item.file.geoStamped ? item.file : null, photoBlob:null, thumbBlob:poster, lat, lng, coordSource, addressAuto:'', addressManual:'' };
     updateCoordBox(); initReviewMap(lat, lng); setReviewLoading(false);
     if(lat != null && lng != null) autoReverseGeocode(); else document.getElementById('addrAuto').placeholder='GPS tidak ditemukan — tandai lokasi di peta atau isi manual';
     return;
@@ -759,6 +759,82 @@ function readDraftLocationData(){
     businessName: document.getElementById('businessNameInput').value.trim()
   };
 }
+
+let liveStream = null, liveRecorder = null, liveChunks = [], liveWatchId = null, liveGpsPollTimer = null;
+let liveGps = null, liveDrawFrame = null, liveRecordingStartedAt = 0;
+
+function setLiveGpsStatus(text){
+  const el = document.getElementById('liveGpsStatus'); if(el) el.textContent = text;
+}
+function closeLiveRecordModal(){
+  if(liveRecorder && liveRecorder.state !== 'inactive') liveRecorder.stop();
+  if(liveWatchId != null && navigator.geolocation) navigator.geolocation.clearWatch(liveWatchId);
+  liveWatchId = null;
+  if(liveGpsPollTimer != null) clearInterval(liveGpsPollTimer);
+  liveGpsPollTimer = null;
+  if(liveDrawFrame) cancelAnimationFrame(liveDrawFrame);
+  liveDrawFrame = null;
+  if(liveStream) liveStream.getTracks().forEach(t => t.stop());
+  liveStream = null;
+  const video = document.getElementById('liveCameraPreview'); if(video) video.srcObject = null;
+  const modal = document.getElementById('liveRecordModal'); if(modal) modal.classList.remove('show');
+  document.getElementById('btnStartLiveRecord').style.display = '';
+  document.getElementById('btnStopLiveRecord').style.display = 'none';
+}
+async function openLiveRecordModal(){
+  const modal = document.getElementById('liveRecordModal');
+  const video = document.getElementById('liveCameraPreview');
+  modal.classList.add('show');
+  setLiveGpsStatus('Meminta izin kamera dan GPS...');
+  try{
+    liveStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:true });
+    video.srcObject = liveStream;
+    await video.play();
+    if(navigator.geolocation){
+      const updateLiveGps = () => {
+        navigator.geolocation.getCurrentPosition(pos => {
+          liveGps = { lat:pos.coords.latitude, lng:pos.coords.longitude, accuracy:pos.coords.accuracy, updatedAt:Date.now() };
+          setLiveGpsStatus(`GPS diperbarui: ${liveGps.lat.toFixed(6)}, ${liveGps.lng.toFixed(6)} ±${Math.round(liveGps.accuracy)}m`);
+        }, () => {
+          if(!liveGps) setLiveGpsStatus('GPS belum tersedia — aktifkan izin lokasi sebelum merekam.');
+        }, { enableHighAccuracy:true, maximumAge:0, timeout:8000 });
+      };
+      updateLiveGps();
+      liveGpsPollTimer = setInterval(updateLiveGps, 1000);
+    }
+    setLiveGpsStatus('Kamera siap. GPS akan diperbarui setiap detik setelah tersedia.');
+  }catch(e){
+    setLiveGpsStatus('Kamera tidak dapat dibuka. Pastikan aplikasi dibuka melalui HTTPS dan izin kamera aktif.');
+  }
+}
+function drawLiveStamp(ctx, canvas, video){
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const pad=Math.max(12,Math.round(canvas.width*.014)), lineH=Math.max(24,Math.round(canvas.height*.042));
+  const gps=liveGps ? `${liveGps.lat.toFixed(6)}, ${liveGps.lng.toFixed(6)} ±${Math.round(liveGps.accuracy)}m` : 'GPS mencari lokasi...';
+  const text=`Geo Foto Lapangan | ${gps} | ${new Date().toLocaleString('id-ID')}`;
+  ctx.fillStyle='rgba(15,38,71,.84)'; ctx.fillRect(0,canvas.height-lineH-pad*2,canvas.width,lineH+pad*2);
+  ctx.fillStyle='#e0b354'; ctx.font=`700 ${Math.max(14,Math.round(canvas.width*.018))}px Arial`; ctx.textBaseline='middle'; ctx.fillText(text,pad,canvas.height-lineH/2-pad);
+}
+async function startLiveRecording(){
+  if(!liveStream) return;
+  const video=document.getElementById('liveCameraPreview'), canvas=document.getElementById('liveStampCanvas');
+  canvas.width=video.videoWidth||1280; canvas.height=video.videoHeight||720;
+  const ctx=canvas.getContext('2d'), composite=canvas.captureStream(30);
+  liveStream.getAudioTracks().forEach(t=>composite.addTrack(t));
+  const types=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+  const mime=types.find(t=>MediaRecorder.isTypeSupported(t))||'';
+  liveChunks=[]; liveRecorder=new MediaRecorder(composite,mime?{mimeType:mime,videoBitsPerSecond:5000000}:undefined);
+  liveRecorder.ondataavailable=e=>{if(e.data.size)liveChunks.push(e.data);};
+  liveRecorder.onstop=()=>{
+    composite.getTracks().forEach(t=>t.stop());
+    const blob=new Blob(liveChunks,{type:mime||'video/webm'}); blob.geoStamped=true;
+    closeLiveRecordModal(); startQueue([blob],'camera');
+  };
+  liveRecordingStartedAt=Date.now(); liveRecorder.start(250);
+  document.getElementById('btnStartLiveRecord').style.display='none'; document.getElementById('btnStopLiveRecord').style.display='';
+  const loop=()=>{if(liveRecorder && liveRecorder.state==='recording'){drawLiveStamp(ctx,canvas,video);liveDrawFrame=requestAnimationFrame(loop);}}; loop();
+}
+function stopLiveRecording(){if(liveRecorder && liveRecorder.state==='recording') liveRecorder.stop();}
 
 async function generateStampedVideo(entry){
   const blob = entry.videoBlob;
@@ -1729,7 +1805,9 @@ async function renderList(){
 
     card.innerHTML = `
       ${((batchMode && !viewingTrash) || (trashSelectMode && viewingTrash)) ? `<input type="checkbox" class="entry-checkbox" data-id="${en.id}" ${isSelected ? 'checked' : ''}>` : ''}
-      <div class="entry-thumb" data-id="${en.id}" style="display:flex;align-items:center;justify-content:center;font-size:1.8rem;background:${en.mediaType === 'video' ? '#0f2647' : '#eee'};color:${en.mediaType === 'video' ? '#e0b354' : 'inherit'}">${en.mediaType === 'video' ? '🎥' : '🖼️'}</div>
+      ${en.mediaType === 'video'
+        ? `<div class="entry-thumb" data-id="${en.id}" style="display:flex;align-items:center;justify-content:center;font-size:1.8rem;background:#0f2647;color:#e0b354">🎥</div>`
+        : `<img class="entry-thumb" src="${thumbUrl}" data-id="${en.id}" alt="Foto objek">`}
       <div class="entry-body">
         ${en.businessName ? `<div class="entry-business">${escapeHtml(en.businessName)}</div>` : ''}
         <div class="entry-addr">${escapeHtml(addr)}</div>
@@ -2160,7 +2238,10 @@ window.addEventListener('DOMContentLoaded', () => {
   purgeOldTrash();
 
   document.getElementById('btnCamera').addEventListener('click', () => document.getElementById('inputCamera').click());
-  document.getElementById('btnVideo').addEventListener('click', () => document.getElementById('inputVideo').click());
+  document.getElementById('btnVideo').addEventListener('click', openLiveRecordModal);
+  document.getElementById('btnCloseLiveRecord').addEventListener('click', closeLiveRecordModal);
+  document.getElementById('btnStartLiveRecord').addEventListener('click', startLiveRecording);
+  document.getElementById('btnStopLiveRecord').addEventListener('click', stopLiveRecording);
   document.getElementById('btnImportVideo').addEventListener('click', () => document.getElementById('inputImportVideo').click());
   document.getElementById('btnImport').addEventListener('click', () => document.getElementById('inputImport').click());
 

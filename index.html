@@ -378,6 +378,23 @@
   <footer>Geo Foto Lapangan &middot; BAPENDA Kabupaten Paser &middot; Data foto tersimpan offline di perangkat masing-masing</footer>
 </div>
 
+<!-- Live video capture modal -->
+<div class="live-record-modal" id="liveRecordModal">
+  <div class="live-record-box">
+    <h3>🎥 Rekam Video dengan Stempel GPS Langsung</h3>
+    <div class="live-preview-wrap">
+      <video id="liveCameraPreview" autoplay muted playsinline></video>
+      <canvas id="liveStampCanvas"></canvas>
+    </div>
+    <div class="live-gps-status" id="liveGpsStatus">Menyiapkan kamera dan GPS...</div>
+    <div class="live-record-actions">
+      <button type="button" id="btnCloseLiveRecord">Batal</button>
+      <button type="button" id="btnStartLiveRecord">⏺ Mulai Rekam</button>
+      <button type="button" id="btnStopLiveRecord" style="display:none">⏹ Berhenti</button>
+    </div>
+  </div>
+</div>
+
 <!-- Photo viewer overlay -->
 <div class="overlay" id="photoOverlay">
   <button class="overlay-close" onclick="closePhotoOverlay()">✕</button>
