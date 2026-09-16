@@ -761,7 +761,7 @@ function readDraftLocationData(){
 }
 
 let liveStream = null, liveRecorder = null, liveChunks = [], liveWatchId = null, liveGpsPollTimer = null;
-let liveGps = null, liveDrawFrame = null, liveRecordingStartedAt = 0;
+let liveGps = null, liveDrawFrame = null, liveRecordingStartedAt = 0, liveMapCrop = null, liveMapKey = '', liveAddress = '';
 
 function setLiveGpsStatus(text){
   const el = document.getElementById('liveGpsStatus'); if(el) el.textContent = text;
@@ -772,6 +772,7 @@ function closeLiveRecordModal(){
   liveWatchId = null;
   if(liveGpsPollTimer != null) clearInterval(liveGpsPollTimer);
   liveGpsPollTimer = null;
+  liveMapCrop = null; liveMapKey = ''; liveAddress = '';
   if(liveDrawFrame) cancelAnimationFrame(liveDrawFrame);
   liveDrawFrame = null;
   if(liveStream) liveStream.getTracks().forEach(t => t.stop());
@@ -803,6 +804,12 @@ async function openLiveRecordModal(){
       const updateLiveGps = () => {
         navigator.geolocation.getCurrentPosition(pos => {
           liveGps = { lat:pos.coords.latitude, lng:pos.coords.longitude, accuracy:pos.coords.accuracy, updatedAt:Date.now() };
+          const mapKey = `${liveGps.lat.toFixed(4)},${liveGps.lng.toFixed(4)}`;
+          if(mapKey !== liveMapKey){
+            liveMapKey = mapKey;
+            loadSatelliteMapCrop(liveGps.lat, liveGps.lng, 17, 220).then(crop => { if(crop) liveMapCrop = crop; }).catch(() => {});
+            reverseGeocode(liveGps.lat, liveGps.lng).then(address => { if(address) liveAddress = address; }).catch(() => {});
+          }
           setLiveGpsStatus(`GPS diperbarui: ${liveGps.lat.toFixed(6)}, ${liveGps.lng.toFixed(6)} ±${Math.round(liveGps.accuracy)}m`);
         }, () => {
           if(!liveGps) setLiveGpsStatus('GPS belum tersedia — aktifkan izin lokasi sebelum merekam.');
@@ -819,11 +826,31 @@ async function openLiveRecordModal(){
 }
 function drawLiveStamp(ctx, canvas, video){
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  const pad=Math.max(12,Math.round(canvas.width*.014)), lineH=Math.max(24,Math.round(canvas.height*.042));
-  const gps=liveGps ? `${liveGps.lat.toFixed(6)}, ${liveGps.lng.toFixed(6)} ±${Math.round(liveGps.accuracy)}m` : 'GPS mencari lokasi...';
-  const text=`Geo Foto Lapangan | ${gps} | ${new Date().toLocaleString('id-ID')}`;
-  ctx.fillStyle='rgba(15,38,71,.84)'; ctx.fillRect(0,canvas.height-lineH-pad*2,canvas.width,lineH+pad*2);
-  ctx.fillStyle='#e0b354'; ctx.font=`700 ${Math.max(14,Math.round(canvas.width*.018))}px Arial`; ctx.textBaseline='middle'; ctx.fillText(text,pad,canvas.height-lineH/2-pad);
+  const base=Math.min(canvas.width, canvas.height);
+  const pad=Math.max(10,Math.round(base*.018));
+  const mapSize=Math.max(90,Math.round(base*.18));
+  const panelW=Math.min(canvas.width*.62, mapSize + Math.min(canvas.width*.34, base*.78) + pad*3);
+  const lineH=Math.max(18,Math.round(base*.035));
+  const panelH=Math.max(mapSize+pad*2, lineH*5+pad*2);
+  const panelX=pad, panelY=(canvas.height-panelH)/2;
+  ctx.fillStyle='rgba(15,25,40,.86)'; ctx.fillRect(panelX,panelY,panelW,panelH);
+  const mapX=panelX+pad, mapY=panelY+(panelH-mapSize)/2;
+  ctx.save(); ctx.beginPath(); ctx.rect(mapX,mapY,mapSize,mapSize); ctx.clip();
+  if(liveMapCrop){
+    ctx.drawImage(liveMapCrop.canvas, liveMapCrop.sx, liveMapCrop.sy, liveMapCrop.sw, liveMapCrop.sh, mapX,mapY,mapSize,mapSize);
+  }else{
+    const g=ctx.createLinearGradient(mapX,mapY,mapX+mapSize,mapY+mapSize); g.addColorStop(0,'#697b5e'); g.addColorStop(.5,'#98a57e'); g.addColorStop(1,'#40563e'); ctx.fillStyle=g; ctx.fillRect(mapX,mapY,mapSize,mapSize);
+  }
+  ctx.restore();
+  const pinX=mapX+mapSize*.5, pinY=mapY+mapSize*.57;
+  ctx.fillStyle='rgba(70,130,255,.5)'; ctx.beginPath(); ctx.ellipse(pinX,pinY+mapSize*.12,mapSize*.24,mapSize*.10,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#ff3b30'; ctx.beginPath(); ctx.arc(pinX,pinY,mapSize*.11,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(pinX,pinY,mapSize*.045,0,Math.PI*2); ctx.fill();
+  const x=mapX+mapSize+pad;
+  const gps=liveGps ? `Lat ${liveGps.lat.toFixed(6)}°  Long ${liveGps.lng.toFixed(6)}°` : 'GPS mencari lokasi...';
+  const time=new Date().toLocaleString('id-ID');
+  const rows=['Geo Foto Lapangan',liveAddress ? liveAddress.slice(0,70) : 'Lokasi sedang dicari...',gps,time,'GPS LIVE'];
+  ctx.textAlign='left'; ctx.textBaseline='middle';
+  rows.forEach((row,i)=>{ ctx.font=`${i===0?'700 ':''}${Math.max(11,Math.round(base*(i===0?.022:.013)))}px Arial`; ctx.fillStyle=i===0?'#fff':(i===3?'#e0b354':(i===4?'#63e6a2':'#d8dde5')); ctx.fillText(row,x,panelY+pad+lineH*(i+.5)); });
 }
 async function startLiveRecording(){
   if(!liveStream){
@@ -938,6 +965,10 @@ async function saveDraftAndAdvance(data){
     return;
   }
   data = data || readDraftLocationData();
+  if(currentDraft.mediaType === 'photo' && !currentDraft.stampedPhotoBlob){
+    try { currentDraft.stampedPhotoBlob = await generateStampedPhoto({ ...currentDraft, ...data, timestamp: Date.now() }); }
+    catch(e) { console.warn('Stempel foto dengan peta gagal, foto asli tetap disimpan:', e); }
+  }
   if(currentDraft.mediaType === 'video' && !currentDraft.stampedVideoBlob){
     showToast('Membuat stempel GPS di dalam video, mohon tunggu...');
     try { currentDraft.stampedVideoBlob = await generateStampedVideo({ ...currentDraft, ...data, timestamp: Date.now() }); }
@@ -954,6 +985,7 @@ async function saveDraftAndAdvance(data){
     timestamp: Date.now(),
     mediaType: currentDraft.mediaType || 'photo',
     photoBlob: currentDraft.photoBlob,
+    stampedPhotoBlob: currentDraft.stampedPhotoBlob || null,
     videoBlob: currentDraft.stampedVideoBlob || currentDraft.videoBlob,
     thumbBlob: currentDraft.thumbBlob,
     fileName: (currentDraft.file && currentDraft.file.name) || `media_${Date.now()}.${currentDraft.mediaType === 'video' ? 'webm' : 'jpg'}`,
@@ -1682,7 +1714,7 @@ async function shareEntry(id, withStamp){
   if(!entry){ showToast('Data tidak ditemukan.'); return; }
   showToast(entry.mediaType === 'video' ? 'Menyiapkan video...' : (withStamp ? 'Menyiapkan foto berkoordinat...' : 'Menyiapkan foto asli...'));
   try{
-    const mediaBlob = entry.mediaType === 'video' ? entry.videoBlob : (withStamp ? await generateStampedPhoto(entry) : entry.photoBlob);
+    const mediaBlob = entry.mediaType === 'video' ? entry.videoBlob : (withStamp ? (entry.stampedPhotoBlob || await generateStampedPhoto(entry)) : entry.photoBlob);
     const mime = entry.mediaType === 'video' ? (entry.mimeType || 'video/webm') : 'image/jpeg';
     const ext = entry.mediaType === 'video' ? (mime.includes('mp4') ? 'mp4' : 'webm') : 'jpg';
     const safeName = (entry.businessName || catLabel(entry.category)).replace(/[^a-z0-9]+/gi, '_');
@@ -2114,9 +2146,9 @@ async function exportZip(){
   const photoFolder = root.folder(photoFolderName);
   for(let i = 0; i < entries.length; i++){
     const en = entries[i];
-    let exportBlob = en.mediaType === 'video' ? (en.videoBlob || en.thumbBlob) : (en.photoBlob || en.thumbBlob);
+    let exportBlob = en.mediaType === 'video' ? (en.videoBlob || en.thumbBlob) : (en.stampedPhotoBlob || en.photoBlob || en.thumbBlob);
     try{
-      if(en.mediaType !== 'video' && en.lat != null && en.lng != null && exportBlob){
+      if(en.mediaType !== 'video' && !en.stampedPhotoBlob && en.lat != null && en.lng != null && exportBlob){
         exportBlob = await generateStampedPhoto({ ...en, photoBlob: exportBlob });
       }
     }catch(err){
