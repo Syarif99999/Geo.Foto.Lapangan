@@ -760,12 +760,98 @@ function readDraftLocationData(){
   };
 }
 
+async function generateStampedVideo(entry){
+  const blob = entry.videoBlob;
+  if(!blob) return null;
+  if(!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream){
+    throw new Error('Browser ini belum mendukung stempel video otomatis.');
+  }
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.src = URL.createObjectURL(blob);
+  await new Promise((resolve, reject) => {
+    video.onloadedmetadata = resolve;
+    video.onerror = () => reject(new Error('Video tidak dapat diproses.'));
+  });
+  const width = video.videoWidth || 1280;
+  const height = video.videoHeight || 720;
+  const canvas = document.createElement('canvas');
+  const maxWidth = 1920;
+  const scale = Math.min(1, maxWidth / width);
+  canvas.width = Math.max(2, Math.round(width * scale));
+  canvas.height = Math.max(2, Math.round(height * scale));
+  const ctx = canvas.getContext('2d');
+  const stream = canvas.captureStream(30);
+  let sourceStream = null;
+  try { sourceStream = video.captureStream ? video.captureStream() : null; } catch(e) {}
+  if(sourceStream){
+    sourceStream.getAudioTracks().forEach(track => stream.addTrack(track));
+  }
+  const preferred = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+  const mimeType = preferred.find(type => MediaRecorder.isTypeSupported(type)) || '';
+  const recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 5000000 } : undefined);
+  const chunks = [];
+  recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+  const stopped = new Promise((resolve, reject) => { recorder.onstop = resolve; recorder.onerror = e => reject(e.error || e); });
+  const startedAt = Date.now();
+  const stampText = `Geo Foto Lapangan  |  ${entry.lat.toFixed(6)}, ${entry.lng.toFixed(6)}  |  ${fmtDate(entry.timestamp)}`;
+  const address = entry.addressManual || entry.addressAuto || '';
+  const draw = () => {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const pad = Math.max(12, Math.round(canvas.width * 0.014));
+    const lineH = Math.max(24, Math.round(canvas.height * 0.042));
+    const boxH = address ? lineH * 2 + pad * 2 : lineH + pad * 2;
+    ctx.fillStyle = 'rgba(15,38,71,.82)';
+    ctx.fillRect(0, canvas.height - boxH, canvas.width, boxH);
+    ctx.fillStyle = '#e0b354';
+    ctx.font = `700 ${Math.max(14, Math.round(canvas.width * 0.018))}px Arial`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(stampText, pad, canvas.height - boxH + pad + lineH/2);
+    if(address){
+      ctx.fillStyle = '#fff';
+      ctx.font = `${Math.max(12, Math.round(canvas.width * 0.014))}px Arial`;
+      ctx.fillText(address.slice(0, 150), pad, canvas.height - pad - lineH/2);
+    }
+    if(!video.paused && !video.ended) requestAnimationFrame(draw);
+  };
+  video.currentTime = 0;
+  await video.play();
+  recorder.start(250);
+  draw();
+  await stoppedAfterVideo(video, recorder, startedAt);
+  await stopped;
+  stream.getTracks().forEach(track => track.stop());
+  if(sourceStream) sourceStream.getTracks().forEach(track => track.stop());
+  URL.revokeObjectURL(video.src);
+  return new Blob(chunks, { type: mimeType || 'video/webm' });
+}
+
+function stoppedAfterVideo(video, recorder, startedAt){
+  return new Promise((resolve) => {
+    const finish = () => {
+      if(recorder.state !== 'inactive') recorder.stop();
+      resolve();
+    };
+    video.onended = finish;
+    video.onerror = finish;
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    const waitMs = duration > 0 ? Math.ceil(duration * 1000) + 1200 : 120000;
+    setTimeout(finish, waitMs);
+  });
+}
+
 async function saveDraftAndAdvance(data){
   if(!currentDraft || currentDraft.lat == null || currentDraft.lng == null){
     showToast('Tandai lokasi terlebih dahulu di peta.');
     return;
   }
   data = data || readDraftLocationData();
+  if(currentDraft.mediaType === 'video' && !currentDraft.stampedVideoBlob){
+    showToast('Membuat stempel GPS di dalam video, mohon tunggu...');
+    try { currentDraft.stampedVideoBlob = await generateStampedVideo({ ...currentDraft, ...data, timestamp: Date.now() }); }
+    catch(e) { console.warn('Stempel video gagal:', e); showToast('Stempel video tidak didukung browser ini; video asli tetap disimpan.'); }
+  }
   const entry = {
     category: currentCategory,
     businessName: data.businessName,
@@ -777,10 +863,10 @@ async function saveDraftAndAdvance(data){
     timestamp: Date.now(),
     mediaType: currentDraft.mediaType || 'photo',
     photoBlob: currentDraft.photoBlob,
-    videoBlob: currentDraft.videoBlob,
+    videoBlob: currentDraft.stampedVideoBlob || currentDraft.videoBlob,
     thumbBlob: currentDraft.thumbBlob,
     fileName: (currentDraft.file && currentDraft.file.name) || `media_${Date.now()}.${currentDraft.mediaType === 'video' ? 'webm' : 'jpg'}`,
-    mimeType: currentDraft.file && currentDraft.file.type || '',
+    mimeType: currentDraft.stampedVideoBlob ? (currentDraft.stampedVideoBlob.type || 'video/webm') : (currentDraft.file && currentDraft.file.type || ''),
     // Kalau alamat otomatis belum berhasil didapat (mis. sedang offline),
     // tandai entri ini supaya dicoba ulang otomatis begitu koneksi kembali ada.
     geocodePending: !currentDraft.addressAuto
