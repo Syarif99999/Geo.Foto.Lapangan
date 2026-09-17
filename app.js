@@ -830,10 +830,23 @@ const STAMP_THEME = {
 // disimpan sebentar, supaya tidak membebani pratinjau video 30 fps.
 let stampBrightnessBlocked = false;
 let stampBrightnessCache = { at:0, value:null };
-function sampleFrameBrightness(ctx, x, y, w, h){
+// Penguncian gaya stempel selama SATU video berjalan (live maupun stempel
+// ulang). Selama terkunci, template & warna tidak berubah di tengah video.
+let liveStampLock = null;
+
+/* Dulu: sekali getImageData gagal (kanvas "tainted"), mode OTOMATIS mati
+   SELAMANYA untuk seluruh aplikasi — termasuk untuk video berikutnya yang
+   sebenarnya baik-baik saja. Sekarang status itu di-reset setiap kali
+   pekerjaan baru dimulai (buka kamera live, stempel foto, stempel video). */
+function resetStampAutoState(){
+  stampBrightnessBlocked = false;
+  stampBrightnessCache = { at:0, value:null };
+}
+
+function sampleFrameBrightness(ctx, x, y, w, h, fresh){
   if(stampBrightnessBlocked) return null;
   const now = Date.now();
-  if(stampBrightnessCache.value != null && now - stampBrightnessCache.at < 700) return stampBrightnessCache.value;
+  if(!fresh && stampBrightnessCache.value != null && now - stampBrightnessCache.at < 700) return stampBrightnessCache.value;
   try{
     const pw = Math.max(8, Math.min(48, Math.round(w/12)));
     const ph = Math.max(6, Math.min(32, Math.round(h/4)));
@@ -852,8 +865,6 @@ function sampleFrameBrightness(ctx, x, y, w, h){
     stampBrightnessCache = { at:now, value:val };
     return val;
   }catch(e){
-    // Kanvas "tainted" (mis. tile peta tanpa izin CORS) — berhenti mencoba,
-    // jangan lempar error tiap frame.
     stampBrightnessBlocked = true;
     return null;
   }
@@ -861,8 +872,9 @@ function sampleFrameBrightness(ctx, x, y, w, h){
 
 // Otak mode OTOMATIS: menentukan template + warna dari bentuk frame,
 // kelengkapan data, dan kecerahan bagian bawah gambar.
-function resolveStampStyle(ctx, W, H, data, mode, forcedTheme){
-  let template = (mode && mode !== 'auto') ? mode : null;
+function resolveStampStyle(ctx, W, H, data, mode, forcedTheme, fresh){
+  const auto = (!mode || mode === 'auto');
+  let template = auto ? null : mode;
   let theme = forcedTheme || null;
   if(!template){
     const base = Math.min(W, H);
@@ -871,10 +883,11 @@ function resolveStampStyle(ctx, W, H, data, mode, forcedTheme){
     if(base < 420) template = 'ringkas';              // frame kecil: teks panjang malah tidak terbaca
     else if(!punyaIsi) template = 'ringkas';          // alamat belum ketemu: jangan pasang baris kosong
     else if(isLandscape) template = 'klasik';         // lanskap: panel pendek supaya objek tidak tertutup
+    else if(H < 900) template = 'klasik';             // potret kecil/sedang: panel Lengkap terlalu memakan layar
     else template = 'lengkap';
   }
   if(!theme){
-    const lum = sampleFrameBrightness(ctx, W*0.04, H*0.74, W*0.92, H*0.22);
+    const lum = sampleFrameBrightness(ctx, W*0.04, H*0.74, W*0.92, H*0.22, fresh);
     // Ambang beda untuk naik/turun (histeresis) supaya warna panel tidak
     // berkedip bolak-balik saat kecerahan gambar pas di perbatasan.
     const sebelumnya = lastStampResolution.theme;
@@ -883,34 +896,47 @@ function resolveStampStyle(ctx, W, H, data, mode, forcedTheme){
     else theme = lum > 180 ? 'terang' : 'gelap';
   }
   if(template === 'elegan') theme = 'terang';
-  lastStampResolution = { template, theme };
-  return { template, theme };
+  lastStampResolution = { template, theme, auto };
+  return { template, theme, auto };
 }
 
 function stampStatusText(){
   const r = lastStampResolution;
   const nama = STAMP_MODE_LABEL[r.template] || r.template;
-  return stampMode === 'auto'
+  const kunci = liveStampLock ? ' · dikunci selama rekaman' : '';
+  return (stampMode === 'auto'
     ? `Mode stempel: Otomatis → ${nama} (${r.theme})`
-    : `Mode stempel: ${STAMP_MODE_LABEL[stampMode] || stampMode}`;
+    : `Mode stempel: ${STAMP_MODE_LABEL[stampMode] || stampMode}`) + kunci;
+}
+
+// Alamat panjang dari reverse-geocode sering berisi ekor yang tidak berguna
+// di stempel ("…, 76211, Kalimantan Timur, Indonesia"). Ekor itu dipangkas
+// supaya panel tidak melar jadi dua-tiga baris.
+function shortenAddressForStamp(addr){
+  let s = String(addr || '').trim().replace(/\s+/g, ' ');
+  s = s.replace(/,\s*Indonesia\s*$/i, '');
+  s = s.replace(/,\s*\d{5}(?=\s*,|\s*$)/g, '');
+  s = s.replace(/\s*,\s*/g, ', ').replace(/^,\s*|,\s*$/g, '');
+  return s.trim();
 }
 
 // Penggambar stempel. ctx sudah berisi gambar/frame; fungsi ini hanya
 // menambahkan panel di bagian bawah.
 function drawGeoStamp(ctx, W, H, data, options){
   options = options || {};
-  const style = resolveStampStyle(ctx, W, H, data, options.mode || stampMode, options.theme);
+  const style = resolveStampStyle(ctx, W, H, data, options.mode || stampMode, options.theme, options.fresh);
   const template = style.template, theme = style.theme;
   const C = STAMP_THEME[theme];
   const base = Math.min(W, H);
+  const isLandscape = W >= H;
   const compact = template === 'ringkas';
   const showMap = !compact;
-  const margin = Math.max(8, Math.round(base * (compact ? 0.018 : 0.024)));
-  const pad = Math.max(8, Math.round(base * 0.026));
-  const gap = Math.max(6, Math.round(base * 0.022));
+  const margin = Math.max(8, Math.round(base * (compact ? 0.018 : 0.022)));
+  const pad = Math.max(8, Math.round(base * 0.022));
+  const gap = Math.max(6, Math.round(base * 0.020));
 
   const title = String(data.title || '').trim();
-  const address = String(data.address || '').trim();
+  const address = shortenAddressForStamp(data.address);
   const note = String(data.note || '').trim();
   const punyaKoordinat = data.lat != null && data.lng != null && isFinite(data.lat) && isFinite(data.lng);
   const coordLine = punyaKoordinat
@@ -919,61 +945,95 @@ function drawGeoStamp(ctx, W, H, data, options){
   const dateLine = data.dateText || formatStampDate(data.timestamp || Date.now());
   const credit = data.credit || 'Geo Foto Lapangan · BAPENDA Paser';
 
-  const fsTitle = Math.max(11, Math.round(base * (compact ? 0.026 : 0.032)));
-  const fsBody  = Math.max(9,  Math.round(base * 0.019));
-  const fsCoord = Math.max(10, Math.round(base * 0.023));
-  const fsSmall = Math.max(8,  Math.round(base * 0.016));
+  // Ukuran huruf sedikit dikecilkan dibanding v42 supaya panel tidak melar.
+  const fsTitle = Math.max(11, Math.round(base * (compact ? 0.025 : 0.029)));
+  const fsBody  = Math.max(9,  Math.round(base * 0.0175));
+  const fsCoord = Math.max(10, Math.round(base * 0.021));
+  const fsSmall = Math.max(8,  Math.round(base * 0.0145));
 
-  let mapSize = showMap ? Math.min(Math.round(base * (W >= H ? 0.17 : 0.21)), Math.round(H * 0.20)) : 0;
-  let panelW = compact ? 0 : (W - margin * 2);
-  let textW = compact ? Math.max(40, W - margin*2 - pad*2)
-                      : Math.max(40, panelW - pad*2 - (showMap ? mapSize + gap : 0));
+  // Batas tinggi panel: jauh lebih ketat dari v42 (dulu 30% untuk semua).
+  const maxPanelH = Math.round(H * (compact ? 0.13 : (isLandscape ? 0.20 : 0.24)));
 
+  let mapSize = showMap ? Math.min(Math.round(base * (isLandscape ? 0.15 : 0.175)), Math.round(H * 0.15)) : 0;
+  const fullPanelW = W - margin * 2;
+  let textW = compact ? Math.max(40, fullPanelW - pad*2)
+                      : Math.max(40, fullPanelW - pad*2 - (showMap ? mapSize + gap : 0));
+
+  /* prio = urutan korban kalau panel kepanjangan.
+     0 = tidak pernah dibuang (koordinat & tanggal — inti bukti lapangan). */
   const rows = [];
   if(!compact){
-    if(title)   rows.push({ text:title,   size:fsTitle, weight:'700', color:C.title, wrap:true, max:2 });
-    if(address) rows.push({ text:address, size:fsBody,  color:C.sub,  wrap:true, max: template === 'lengkap' ? 2 : 1 });
+    if(title)   rows.push({ text:title,   size:fsTitle, weight:'700', color:C.title, wrap:true, max:2, prio:2 });
+    if(address) rows.push({ text:address, size:fsBody,  color:C.sub,  wrap:true, max: template === 'lengkap' ? 2 : 1, prio:3 });
   }
-  rows.push({ text:coordLine, size:fsCoord, weight:'700', color:C.coord, mono:true });
-  rows.push({ text:dateLine,  size:fsSmall, color:C.date });
-  if(template === 'lengkap' && note) rows.push({ text:note, size:fsSmall, color:C.sub, wrap:true, max:1 });
-  if(!compact) rows.push({ text:credit, size:fsSmall, color:C.credit });
+  rows.push({ text:coordLine, size:fsCoord, weight:'700', color:C.coord, mono:true, prio:0 });
+  rows.push({ text:dateLine,  size:fsSmall, color:C.date, prio:0 });
+  if(template === 'lengkap' && note) rows.push({ text:note, size:fsSmall, color:C.sub, wrap:true, max:1, prio:4 });
+  if(!compact) rows.push({ text:credit, size:fsSmall, color:C.credit, prio:5 });
 
   const lines = [];
   rows.forEach(r => {
     const family = r.mono ? 'monospace' : 'Arial, sans-serif';
     if(r.wrap){
       ctx.font = `${r.weight ? r.weight + ' ' : ''}${r.size}px ${family}`;
-      wrapText(ctx, r.text, textW).slice(0, r.max || 2).forEach(t => {
-        lines.push({ text:t, size:r.size, weight:r.weight, color:r.color, family });
+      const parts = wrapText(ctx, r.text, textW).slice(0, r.max || 2);
+      parts.forEach((t, i) => {
+        // baris lanjutan (baris ke-2 judul/alamat) dibuang lebih dulu
+        lines.push({ text:t, size:r.size, weight:r.weight, color:r.color, family, prio: r.prio + (i ? 0.5 : 0) });
       });
     }else{
-      // baris satu-baris otomatis mengecil kalau kepanjangan — tidak pernah terpotong
       const size = fitSingleLineFontSize(ctx, r.text, r.size, family, r.weight || '', textW, Math.max(8, r.size*0.55));
-      lines.push({ text:r.text, size, weight:r.weight, color:r.color, family });
+      lines.push({ text:r.text, size, weight:r.weight, color:r.color, family, prio:r.prio });
     }
   });
 
-  const lineH = l => Math.round(l.size * 1.34);
+  const lineH = l => Math.round(l.size * 1.30);
   let textH = 0;
-  const recalc = () => {
-    textH = 0; lines.forEach(l => { textH += lineH(l); });
-    return Math.max(showMap ? mapSize + pad*2 : 0, textH + pad*2);
-  };
-  let panelH = recalc();
-  const maxPanelH = Math.round(H * (compact ? 0.16 : 0.30));
-  while(panelH > maxPanelH && lines.length > 2){ lines.pop(); panelH = recalc(); }
+  const recalcText = () => { textH = 0; lines.forEach(l => { textH += lineH(l); }); return textH; };
+  recalcText();
+
+  /* Kotak peta tidak boleh lagi MEMAKSA panel jadi tinggi: ukurannya
+     mengikuti tinggi teks (itu penyebab utama panel "kepanjangan" pada
+     stempel Ringkas-isi tapi berpeta). */
+  const fitMap = () => { if(showMap) mapSize = Math.max(Math.round(base*0.09), Math.min(mapSize, textH)); };
+  fitMap();
+  const panelHFor = () => Math.max(showMap ? mapSize + pad*2 : 0, textH + pad*2);
+  let panelH = panelHFor();
+
+  // Buang baris berdasarkan PRIORITAS (kredit → catatan → baris ke-2 alamat →
+  // alamat → baris ke-2 judul → judul). Koordinat & tanggal selalu selamat —
+  // dulu kode membuang baris paling bawah, jadi tanggal bisa ikut hilang.
+  while(panelH > maxPanelH){
+    let victim = -1, worst = 0;
+    lines.forEach((l, i) => { if(l.prio > worst){ worst = l.prio; victim = i; } });
+    if(victim < 0) break;
+    lines.splice(victim, 1);
+    recalcText(); fitMap(); panelH = panelHFor();
+  }
   if(panelH > maxPanelH){
     const k = Math.max(0.55, maxPanelH / panelH);
     lines.forEach(l => { l.size = Math.max(8, Math.round(l.size * k)); });
+    recalcText();
     if(showMap) mapSize = Math.round(mapSize * k);
-    panelH = recalc();
+    fitMap(); panelH = panelHFor();
   }
 
+  /* Lebar panel sekarang MENGIKUTI ISI, tidak lagi selalu selebar frame.
+     Kalau teksnya pendek, panelnya juga pendek — tidak ada lagi kotak
+     panjang melintang dengan separuh ruang kosong. */
+  let maxTextLineW = 0;
+  lines.forEach(l => {
+    ctx.font = `${l.weight ? l.weight + ' ' : ''}${l.size}px ${l.family}`;
+    maxTextLineW = Math.max(maxTextLineW, ctx.measureText(l.text).width);
+  });
+  let panelW;
   if(compact){
-    let w = 0;
-    lines.forEach(l => { ctx.font = `${l.weight ? l.weight + ' ' : ''}${l.size}px ${l.family}`; w = Math.max(w, ctx.measureText(l.text).width); });
-    panelW = Math.min(W - margin*2, Math.round(w + pad*2));
+    panelW = Math.min(fullPanelW, Math.round(maxTextLineW + pad*2));
+  }else{
+    const isiW = Math.round(maxTextLineW + pad*2 + (showMap ? mapSize + gap : 0)
+                 + (template === 'elegan' ? Math.round(base*0.008) : 0));
+    const minW = Math.round(fullPanelW * (isLandscape ? 0.46 : 0.58));
+    panelW = Math.max(minW, Math.min(fullPanelW, isiW));
   }
 
   const panelX = margin;
@@ -1031,7 +1091,7 @@ function drawGeoStamp(ctx, W, H, data, options){
 
   if(!compact && options.badge !== false){
     const bt = data.badge || 'Geo Foto Lapangan';
-    const bs = Math.max(8, Math.round(base*0.015));
+    const bs = Math.max(8, Math.round(base*0.014));
     ctx.font = `700 ${bs}px Arial`;
     const bw = ctx.measureText(bt).width + bs*1.7, bh = Math.round(bs*2);
     const bx = panelX + panelW - bw - Math.round(pad*0.4);
@@ -1118,6 +1178,7 @@ function closeLiveRecordModal(){
   liveGpsPollTimer = null;
   liveMapCrop = null; liveMapKey = ''; liveAddress = '';
   liveOrientLocked = null;
+  liveStampLock = null;
   if(liveDrawFrame) cancelAnimationFrame(liveDrawFrame);
   liveDrawFrame = null;
   if(liveStream) liveStream.getTracks().forEach(t => t.stop());
@@ -1142,6 +1203,8 @@ async function openLiveRecordModal(){
   const video = document.getElementById('liveCameraPreview');
   modal.classList.add('show');
   liveOrientLocked = null;
+  liveStampLock = null;
+  resetStampAutoState();   // mode OTOMATIS mulai dari nol tiap sesi kamera
   setLiveOrientMode(liveOrientMode);
   setStampMode(stampMode);
   setLiveGpsStatus('Meminta izin kamera dan GPS...');
@@ -1202,7 +1265,9 @@ function drawLiveStamp(ctx, canvas, video, rotation=0){
     timestamp: Date.now(),
     mapCrop: liveMapCrop,
     badge: liveGps ? '● GPS LIVE' : '○ GPS mencari'
-  });
+  }, liveStampLock
+       ? { mode: liveStampLock.template, theme: liveStampLock.theme }
+       : { mode: stampMode });
 }
 async function startLiveRecording(){
   if(!liveStream){
@@ -1215,6 +1280,12 @@ async function startLiveRecording(){
   // OTOMATIS) begitu rekaman dimulai — ukuran kanvas tidak boleh berubah di
   // tengah rekaman karena akan merusak file videonya.
   liveOrientLocked = effectiveLiveOrient();
+  // Gaya stempel (template + warna) dibekukan pada hasil OTOMATIS terakhir
+  // dari pratinjau. Dulu penilaian otomatis tetap jalan tiap frame saat
+  // merekam, sehingga panel bisa berganti gaya/warna di tengah video.
+  liveStampLock = { template: lastStampResolution.template, theme: lastStampResolution.theme };
+  const info0 = document.getElementById('liveStampInfo');
+  if(info0) info0.textContent = stampStatusText();
   const canvas=document.getElementById('liveStampCanvas');
   // Kanvas ini sudah aktif digambar oleh startLivePreviewLoop() sejak modal
   // dibuka, jadi rekaman tinggal menangkap stream dari kanvas yang sama —
@@ -1242,7 +1313,10 @@ async function startLiveRecording(){
   const toggle = document.getElementById('liveOrientToggle');
   if(toggle) toggle.classList.add('disabled');
 }
-function stopLiveRecording(){if(liveRecorder && liveRecorder.state==='recording') liveRecorder.stop();}
+function stopLiveRecording(){
+  if(liveRecorder && liveRecorder.state==='recording') liveRecorder.stop();
+  liveStampLock = null;
+}
 
 async function generateStampedVideo(entry){
   const blob = entry.videoBlob;
@@ -1268,6 +1342,7 @@ async function generateStampedVideo(entry){
   // seperti pada foto.
   let mapCrop = null;
   try { mapCrop = await loadSatelliteMapCrop(entry.lat, entry.lng, 17, 256); } catch(e) {}
+  resetStampAutoState();   // penilaian otomatis untuk video ini mulai bersih
   const stream = canvas.captureStream(30);
   let sourceStream = null;
   try { sourceStream = video.captureStream ? video.captureStream() : null; } catch(e) {}
@@ -1291,14 +1366,25 @@ async function generateStampedVideo(entry){
   };
   // Mode stempel dikunci di frame pertama supaya template/warnanya tidak
   // berkedip-ganti di tengah video (mode OTOMATIS dievaluasi sekali saja).
+  // Dulu gaya dikunci pada frame PERTAMA. Masalahnya frame pertama video
+  // sering masih hitam/belum ter-render, jadi mode OTOMATIS menilai gambar
+  // kosong lalu mengunci warna yang salah untuk seluruh video. Sekarang
+  // beberapa frame awal dinilai ulang (tanpa cache), baru dikunci pada
+  // keputusan yang paling sering muncul.
+  const PROBE_FRAMES = 8;
+  let probe = 0;
+  const suara = { gelap:0, terang:0 };
   let locked = null;
-  let first = true;
   const draw = () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    if(first){
-      locked = drawGeoStamp(ctx, canvas.width, canvas.height, stampData, { mode: stampMode });
-      first = false;
+    if(!locked){
+      const hasil = drawGeoStamp(ctx, canvas.width, canvas.height, stampData, { mode: stampMode, fresh: true });
+      suara[hasil.theme] = (suara[hasil.theme] || 0) + 1;
+      probe++;
+      if(probe >= PROBE_FRAMES){
+        locked = { template: hasil.template, theme: suara.terang > suara.gelap ? 'terang' : 'gelap' };
+      }
     }else{
       drawGeoStamp(ctx, canvas.width, canvas.height, stampData, { mode: locked.template, theme: locked.theme });
     }
@@ -2112,6 +2198,7 @@ async function generateStampedPhoto(entry){
 
   // Stempel digambar oleh mesin yang SAMA dengan video, jadi foto dan video
   // dari satu lokasi kelihatan satu gaya.
+  resetStampAutoState();
   drawGeoStamp(ctx, W, H, {
     title: businessName || deriveRegionTitle(address) || catText,
     address: address || catText,
@@ -2120,7 +2207,7 @@ async function generateStampedPhoto(entry){
     timestamp: entry.timestamp,
     mapCrop,
     badge: 'Geo Foto Lapangan'
-  });
+  }, { fresh:true });
 
   // Satu kali encoding JPEG kualitas tinggi agar detail wajah, tulisan, dan
   // tekstur bangunan tetap tajam saat dibagikan.
