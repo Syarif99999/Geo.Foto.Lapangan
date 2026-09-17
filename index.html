@@ -216,6 +216,20 @@
   .loading-inline{display:flex;align-items:center;gap:8px;color:#7a8494;font-size:.78rem;padding:10px 0;}
   .spinner{width:16px;height:16px;border:2.5px solid var(--line);border-top-color:var(--navy);border-radius:50%;animation:spin .7s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
+
+  /* ===== LIVE VIDEO STAMP ===== */
+  .live-record-modal{position:fixed;inset:0;z-index:3500;display:none;align-items:center;justify-content:center;padding:12px;background:rgba(3,10,20,.82);}
+  .live-record-modal.show{display:flex;}
+  .live-record-box{width:min(960px,100%);max-height:96vh;overflow:auto;background:#101a2b;color:#fff;border:1px solid rgba(224,179,84,.4);border-radius:18px;padding:14px;box-shadow:0 18px 60px rgba(0,0,0,.45);}
+  .live-record-box h3{margin:0 0 10px;font-size:.95rem;color:#f5d58b;}
+  .live-preview-wrap{position:relative;width:100%;background:#05080d;border-radius:12px;overflow:hidden;line-height:0;}
+  #liveCameraPreview,#liveStampCanvas{display:block;width:100%;height:auto;max-height:70vh;object-fit:contain;}
+  #liveStampCanvas{position:absolute;inset:0;pointer-events:none;}
+  .live-gps-status{margin:10px 0;color:#b8c5d6;font-size:.72rem;line-height:1.4;min-height:1.4em;}
+  .live-record-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;}
+  .live-record-actions button{border:0;border-radius:9px;padding:10px 14px;font-weight:800;cursor:pointer;background:#fff;color:#102440;}
+  .live-record-actions button:last-child{background:#c8952c;color:#102440;}
+  @media(max-width:560px){.live-record-box{padding:10px;border-radius:14px}.live-record-actions button{flex:1;min-width:30%;font-size:.74rem}.live-preview-wrap{max-height:70vh;}}
 </style>
 </head>
 <body>

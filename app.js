@@ -825,32 +825,69 @@ async function openLiveRecordModal(){
   }
 }
 function drawLiveStamp(ctx, canvas, video){
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  const base=Math.min(canvas.width, canvas.height);
-  const pad=Math.max(10,Math.round(base*.018));
-  const mapSize=Math.max(90,Math.round(base*.18));
-  const panelW=Math.min(canvas.width*.62, mapSize + Math.min(canvas.width*.34, base*.78) + pad*3);
-  const lineH=Math.max(18,Math.round(base*.035));
-  const panelH=Math.max(mapSize+pad*2, lineH*5+pad*2);
-  const panelX=pad, panelY=(canvas.height-panelH)/2;
-  ctx.fillStyle='rgba(15,25,40,.86)'; ctx.fillRect(panelX,panelY,panelW,panelH);
-  const mapX=panelX+pad, mapY=panelY+(panelH-mapSize)/2;
-  ctx.save(); ctx.beginPath(); ctx.rect(mapX,mapY,mapSize,mapSize); ctx.clip();
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(video, 0, 0, W, H);
+
+  // Stempel selalu turun ke bagian bawah frame dan mengikuti ukuran asli
+  // kamera. Tidak ada posisi tengah-kiri yang membuat objek lapangan tertutup.
+  const base = Math.min(W, H);
+  const margin = Math.max(12, Math.round(base * 0.035));
+  const pad = Math.max(10, Math.round(base * 0.025));
+  const mapSize = Math.max(72, Math.round(base * (W >= H ? 0.16 : 0.19)));
+  const panelW = Math.min(W - margin * 2, Math.round(W * (W >= H ? 0.72 : 0.92)));
+  const textW = panelW - pad * 2 - mapSize - pad;
+  const titleSize = Math.max(12, Math.round(base * 0.026));
+  const bodySize = Math.max(10, Math.round(base * 0.017));
+  const lineH = Math.max(16, Math.round(bodySize * 1.35));
+  const gps = liveGps ? `Lat ${liveGps.lat.toFixed(6)}°  Long ${liveGps.lng.toFixed(6)}°` : 'GPS mencari lokasi...';
+  const rows = [
+    { text:'Geo Foto Lapangan', size:titleSize, color:'#fff', weight:'700' },
+    { text:liveAddress || 'Lokasi sedang dicari...', size:bodySize, color:'#d8dde5' },
+    { text:gps, size:bodySize, color:'#e0b354', weight:'700' },
+    { text:new Date().toLocaleString('id-ID'), size:bodySize, color:'#b8c0cc' },
+    { text:'GPS LIVE', size:bodySize, color:'#63e6a2', weight:'700' }
+  ];
+  const maxLines = Math.max(3, Math.floor((H * 0.25 - pad * 2) / lineH));
+  const visibleRows = rows.slice(0, maxLines);
+  const panelH = Math.min(Math.round(H * 0.27), Math.max(mapSize + pad * 2, visibleRows.length * lineH + pad * 2));
+  const panelX = margin;
+  const panelY = H - margin - panelH;
+
+  ctx.save();
+  roundRectPath(ctx, panelX, panelY, panelW, panelH, Math.max(8, Math.round(base * .018)));
+  ctx.fillStyle = 'rgba(15,25,40,.88)';
+  ctx.fill();
+  ctx.restore();
+
+  const mapX = panelX + pad;
+  const mapY = panelY + (panelH - mapSize) / 2;
+  ctx.save();
+  roundRectPath(ctx, mapX, mapY, mapSize, mapSize, Math.max(6, Math.round(base * .012)));
+  ctx.clip();
   if(liveMapCrop){
-    ctx.drawImage(liveMapCrop.canvas, liveMapCrop.sx, liveMapCrop.sy, liveMapCrop.sw, liveMapCrop.sh, mapX,mapY,mapSize,mapSize);
-  }else{
-    const g=ctx.createLinearGradient(mapX,mapY,mapX+mapSize,mapY+mapSize); g.addColorStop(0,'#697b5e'); g.addColorStop(.5,'#98a57e'); g.addColorStop(1,'#40563e'); ctx.fillStyle=g; ctx.fillRect(mapX,mapY,mapSize,mapSize);
+    ctx.drawImage(liveMapCrop.canvas, liveMapCrop.sx, liveMapCrop.sy, liveMapCrop.sw, liveMapCrop.sh, mapX, mapY, mapSize, mapSize);
+  } else {
+    const g=ctx.createLinearGradient(mapX,mapY,mapX+mapSize,mapY+mapSize);
+    g.addColorStop(0,'#697b5e'); g.addColorStop(.5,'#98a57e'); g.addColorStop(1,'#40563e');
+    ctx.fillStyle=g; ctx.fillRect(mapX,mapY,mapSize,mapSize);
   }
   ctx.restore();
-  const pinX=mapX+mapSize*.5, pinY=mapY+mapSize*.57;
-  ctx.fillStyle='rgba(70,130,255,.5)'; ctx.beginPath(); ctx.ellipse(pinX,pinY+mapSize*.12,mapSize*.24,mapSize*.10,0,0,Math.PI*2); ctx.fill();
-  ctx.fillStyle='#ff3b30'; ctx.beginPath(); ctx.arc(pinX,pinY,mapSize*.11,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(pinX,pinY,mapSize*.045,0,Math.PI*2); ctx.fill();
-  const x=mapX+mapSize+pad;
-  const gps=liveGps ? `Lat ${liveGps.lat.toFixed(6)}°  Long ${liveGps.lng.toFixed(6)}°` : 'GPS mencari lokasi...';
-  const time=new Date().toLocaleString('id-ID');
-  const rows=['Geo Foto Lapangan',liveAddress ? liveAddress.slice(0,70) : 'Lokasi sedang dicari...',gps,time,'GPS LIVE'];
-  ctx.textAlign='left'; ctx.textBaseline='middle';
-  rows.forEach((row,i)=>{ ctx.font=`${i===0?'700 ':''}${Math.max(11,Math.round(base*(i===0?.022:.013)))}px Arial`; ctx.fillStyle=i===0?'#fff':(i===3?'#e0b354':(i===4?'#63e6a2':'#d8dde5')); ctx.fillText(row,x,panelY+pad+lineH*(i+.5)); });
+  drawMapPin(ctx, mapX + mapSize*.5, mapY + mapSize*.62, mapSize*.55, '#ff3b30');
+
+  const textX = mapX + mapSize + pad;
+  const maxTextWidth = Math.max(40, textW);
+  let y = panelY + pad;
+  ctx.textAlign='left'; ctx.textBaseline='top';
+  visibleRows.forEach(row => {
+    ctx.font = `${row.weight || ''} ${row.size}px Arial`;
+    const lines = wrapText(ctx, row.text, maxTextWidth).slice(0, 2);
+    lines.forEach(line => {
+      ctx.fillStyle = row.color;
+      ctx.fillText(line, textX, y, maxTextWidth);
+      y += lineH;
+    });
+  });
 }
 async function startLiveRecording(){
   if(!liveStream){
@@ -885,64 +922,71 @@ async function generateStampedVideo(entry){
     throw new Error('Browser ini belum mendukung stempel video otomatis.');
   }
   const video = document.createElement('video');
-  video.muted = true;
-  video.playsInline = true;
+  video.muted = true; video.playsInline = true;
   video.src = URL.createObjectURL(blob);
   await new Promise((resolve, reject) => {
     video.onloadedmetadata = resolve;
     video.onerror = () => reject(new Error('Video tidak dapat diproses.'));
   });
-  const width = video.videoWidth || 1280;
-  const height = video.videoHeight || 720;
+  const width = video.videoWidth || 1280, height = video.videoHeight || 720;
+  const scale = Math.min(1, 1920 / width);
   const canvas = document.createElement('canvas');
-  const maxWidth = 1920;
-  const scale = Math.min(1, maxWidth / width);
   canvas.width = Math.max(2, Math.round(width * scale));
   canvas.height = Math.max(2, Math.round(height * scale));
   const ctx = canvas.getContext('2d');
   const stream = canvas.captureStream(30);
   let sourceStream = null;
   try { sourceStream = video.captureStream ? video.captureStream() : null; } catch(e) {}
-  if(sourceStream){
-    sourceStream.getAudioTracks().forEach(track => stream.addTrack(track));
-  }
+  if(sourceStream) sourceStream.getAudioTracks().forEach(track => stream.addTrack(track));
   const preferred = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
   const mimeType = preferred.find(type => MediaRecorder.isTypeSupported(type)) || '';
   const recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 5000000 } : undefined);
   const chunks = [];
   recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
   const stopped = new Promise((resolve, reject) => { recorder.onstop = resolve; recorder.onerror = e => reject(e.error || e); });
-  const startedAt = Date.now();
-  const stampText = `Geo Foto Lapangan  |  ${entry.lat.toFixed(6)}, ${entry.lng.toFixed(6)}  |  ${fmtDate(entry.timestamp)}`;
   const address = entry.addressManual || entry.addressAuto || '';
   const draw = () => {
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const pad = Math.max(12, Math.round(canvas.width * 0.014));
-    const lineH = Math.max(24, Math.round(canvas.height * 0.042));
-    const boxH = address ? lineH * 2 + pad * 2 : lineH + pad * 2;
-    ctx.fillStyle = 'rgba(15,38,71,.82)';
-    ctx.fillRect(0, canvas.height - boxH, canvas.width, boxH);
-    ctx.fillStyle = '#e0b354';
-    ctx.font = `700 ${Math.max(14, Math.round(canvas.width * 0.018))}px Arial`;
-    ctx.textBaseline = 'middle';
-    ctx.fillText(stampText, pad, canvas.height - boxH + pad + lineH/2);
-    if(address){
-      ctx.fillStyle = '#fff';
-      ctx.font = `${Math.max(12, Math.round(canvas.width * 0.014))}px Arial`;
-      ctx.fillText(address.slice(0, 150), pad, canvas.height - pad - lineH/2);
-    }
-    if(!video.paused && !video.ended) requestAnimationFrame(draw);
+    const W=canvas.width, H=canvas.height, base=Math.min(W,H);
+    ctx.clearRect(0,0,W,H); ctx.drawImage(video,0,0,W,H);
+    // Panel bawah adaptif: lebar dan tinggi mengikuti orientasi video.
+    const margin=Math.max(12,Math.round(base*.035)), pad=Math.max(10,Math.round(base*.025));
+    const mapSize=Math.max(72,Math.round(base*(W>=H?.16:.19)));
+    const panelW=Math.min(W-margin*2,Math.round(W*(W>=H?.72:.92)));
+    const titleSize=Math.max(12,Math.round(base*.026));
+    const bodySize=Math.max(10,Math.round(base*.017));
+    const lineH=Math.max(16,Math.round(bodySize*1.35));
+    const gps=`Lat ${Number(entry.lat).toFixed(6)}°  Long ${Number(entry.lng).toFixed(6)}°`;
+    const rows=[
+      {text:entry.businessName || 'Geo Foto Lapangan',size:titleSize,color:'#fff',weight:'700'},
+      {text:address || 'Lokasi lapangan',size:bodySize,color:'#d8dde5'},
+      {text:gps,size:bodySize,color:'#e0b354',weight:'700'},
+      {text:formatStampDate(entry.timestamp),size:bodySize,color:'#b8c0cc'},
+      {text:'Geo Foto Lapangan · BAPENDA Paser',size:bodySize,color:'#93a0b0'}
+    ];
+    const maxTextW=Math.max(40,panelW-pad*2-mapSize-pad);
+    const textLines=[];
+    rows.forEach(row=>{
+      ctx.font=`${row.weight||''} ${row.size}px Arial`;
+      wrapText(ctx,row.text,maxTextW).slice(0,2).forEach(line=>textLines.push({...row,text:line}));
+    });
+    const maxLines=Math.max(3,Math.floor((H*.25-pad*2)/lineH));
+    const shown=textLines.slice(0,maxLines);
+    const panelH=Math.min(Math.round(H*.27),Math.max(mapSize+pad*2,shown.length*lineH+pad*2));
+    const panelX=margin,panelY=H-margin-panelH;
+    ctx.save();roundRectPath(ctx,panelX,panelY,panelW,panelH,Math.max(8,Math.round(base*.018)));ctx.fillStyle='rgba(15,25,40,.88)';ctx.fill();ctx.restore();
+    const mapX=panelX+pad,mapY=panelY+(panelH-mapSize)/2;
+    ctx.save();roundRectPath(ctx,mapX,mapY,mapSize,mapSize,Math.max(6,Math.round(base*.012)));ctx.clip();
+    const g=ctx.createLinearGradient(mapX,mapY,mapX+mapSize,mapY+mapSize);g.addColorStop(0,'#697b5e');g.addColorStop(.5,'#98a57e');g.addColorStop(1,'#40563e');ctx.fillStyle=g;ctx.fillRect(mapX,mapY,mapSize,mapSize);ctx.restore();
+    drawMapPin(ctx,mapX+mapSize*.5,mapY+mapSize*.62,mapSize*.55,'#ff3b30');
+    let y=panelY+pad;ctx.textAlign='left';ctx.textBaseline='top';
+    shown.forEach(row=>{ctx.font=`${row.weight||''} ${row.size}px Arial`;ctx.fillStyle=row.color;ctx.fillText(row.text,mapX+mapSize+pad,y,maxTextW);y+=lineH;});
+    if(!video.paused&&!video.ended) requestAnimationFrame(draw);
   };
-  video.currentTime = 0;
-  await video.play();
-  recorder.start(250);
-  draw();
-  await stoppedAfterVideo(video, recorder, startedAt);
-  await stopped;
-  stream.getTracks().forEach(track => track.stop());
-  if(sourceStream) sourceStream.getTracks().forEach(track => track.stop());
+  video.currentTime=0; await video.play(); recorder.start(250); draw();
+  await stoppedAfterVideo(video,recorder,Date.now()); await stopped;
+  stream.getTracks().forEach(track=>track.stop()); if(sourceStream) sourceStream.getTracks().forEach(track=>track.stop());
   URL.revokeObjectURL(video.src);
-  return new Blob(chunks, { type: mimeType || 'video/webm' });
+  return new Blob(chunks,{type:mimeType||'video/webm'});
 }
 
 function stoppedAfterVideo(video, recorder, startedAt){
@@ -1726,7 +1770,7 @@ async function shareEntry(id, withStamp){
       await navigator.share({ files:[file] });
       shared = true;
     } else {
-      const url = URL.createObjectURL(photoBlob);
+      const url = URL.createObjectURL(mediaBlob);
       const a = document.createElement('a');
       a.href = url; a.download = fileName;
       document.body.appendChild(a); a.click(); a.remove();
