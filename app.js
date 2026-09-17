@@ -911,7 +911,26 @@ async function startLiveRecording(){
   };
   liveRecordingStartedAt=Date.now(); liveRecorder.start(250);
   document.getElementById('btnStartLiveRecord').style.display='none'; document.getElementById('btnStopLiveRecord').style.display='';
-  const loop=()=>{if(liveRecorder && liveRecorder.state==='recording'){drawLiveStamp(ctx,canvas,video);liveDrawFrame=requestAnimationFrame(loop);}}; loop();
+  // Sinkronkan ukuran canvas setiap frame. Pada HP, videoWidth/videoHeight
+  // dapat berubah saat pengguna memutar perangkat ke lanskap atau potret.
+  const syncLiveCanvasSize = () => {
+    const frameW = video.videoWidth || 1280;
+    const frameH = video.videoHeight || 720;
+    if(canvas.width !== frameW || canvas.height !== frameH){
+      canvas.width = frameW;
+      canvas.height = frameH;
+    }
+  };
+  const loop=()=>{
+    if(liveRecorder && liveRecorder.state==='recording'){
+      syncLiveCanvasSize();
+      drawLiveStamp(ctx,canvas,video);
+      liveDrawFrame=requestAnimationFrame(loop);
+    }
+  };
+  window.addEventListener('orientationchange', syncLiveCanvasSize, { passive:true });
+  window.addEventListener('resize', syncLiveCanvasSize, { passive:true });
+  loop();
 }
 function stopLiveRecording(){if(liveRecorder && liveRecorder.state==='recording') liveRecorder.stop();}
 
