@@ -226,6 +226,15 @@
   .live-orient-toggle button{flex:1;border:0;border-radius:7px;padding:9px 6px;font-weight:800;font-size:.78rem;cursor:pointer;background:transparent;color:#9fb0c4;}
   .live-orient-toggle button.active{background:#e0b354;color:#102440;}
   .live-orient-toggle.disabled{opacity:.5;pointer-events:none;}
+  .stamp-mode-toggle{display:flex;gap:5px;flex-wrap:wrap;background:#0a1420;border-radius:10px;padding:4px;margin-bottom:8px;}
+  .stamp-mode-toggle button{flex:1 1 auto;min-width:22%;border:0;border-radius:7px;padding:8px 6px;font-weight:800;font-size:.72rem;cursor:pointer;background:transparent;color:#9fb0c4;}
+  .stamp-mode-toggle button.active{background:#e0b354;color:#102440;}
+  .stamp-mode-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;margin:0 0 16px 0;}
+  .stamp-mode-card > label{display:block;font-weight:800;font-size:.78rem;margin-bottom:8px;color:var(--navy);}
+  .stamp-mode-card .stamp-mode-toggle{background:#eef1f6;}
+  .stamp-mode-card .stamp-mode-toggle button{color:#4b5a6d;}
+  .stamp-mode-card .stamp-mode-toggle button.active{background:var(--navy);color:#ffd98a;}
+  .stamp-mode-card .hint{margin:8px 0 0 0;}
   .live-preview-wrap{position:relative;width:100%;background:#05080d;border-radius:12px;overflow:hidden;line-height:0;}
   #liveCameraPreview,#liveStampCanvas{display:block;width:100%;height:auto;max-height:70vh;object-fit:contain;}
   #liveStampCanvas{position:absolute;inset:0;pointer-events:none;}
@@ -312,6 +321,18 @@
       <input type="file" id="inputImport" accept="image/*" multiple hidden>
       <input type="file" id="inputImportVideo" accept="video/*" multiple hidden>
       <div class="hint">📌 Foto langsung otomatis mengunci koordinat GPS saat itu juga. Foto impor akan dibaca data GPS dari EXIF bila tersedia (foto asli kamera biasanya punya, foto kiriman WhatsApp biasanya sudah terhapus GPS-nya) — jika tidak ditemukan, tandai lokasi manual di peta atau pakai tombol "Gunakan Lokasi Saat Ini".</div>
+
+      <div class="stamp-mode-card">
+        <label>🏷️ Mode Stempel (foto &amp; video)</label>
+        <div class="stamp-mode-toggle">
+          <button type="button" data-stamp="auto" class="active">🤖 Otomatis</button>
+          <button type="button" data-stamp="lengkap">📋 Lengkap</button>
+          <button type="button" data-stamp="klasik">🗺️ Klasik</button>
+          <button type="button" data-stamp="ringkas">⚡ Ringkas</button>
+          <button type="button" data-stamp="elegan">✨ Elegan</button>
+        </div>
+        <div class="hint">🤖 <b>Otomatis</b>: aplikasi memilih sendiri — potret/lanskap, lengkap/ringkas, panel gelap atau terang mengikuti terang-gelapnya bagian bawah gambar, supaya tulisan selalu terbaca. Pilihan ini dipakai untuk foto tersimpan maupun rekaman video, dan diingat sampai diganti.</div>
+      </div>
 
       <div class="last-saved-bar" id="lastSavedBar" style="display:none;">
         <span>✅ Foto tersimpan dengan koordinat</span>
@@ -401,10 +422,19 @@
   <div class="live-record-box">
     <h3>🎥 Rekam Video dengan Stempel GPS Langsung</h3>
     <div class="live-orient-toggle" id="liveOrientToggle">
-      <button type="button" id="btnOrientPortrait" class="active" data-orient="portrait">📱 Potret</button>
+      <button type="button" id="btnOrientAuto" class="active" data-orient="auto">🔄 Otomatis</button>
+      <button type="button" id="btnOrientPortrait" data-orient="portrait">📱 Potret</button>
       <button type="button" id="btnOrientLandscape" data-orient="landscape">📱 Lanskap</button>
     </div>
-    <div class="live-gps-status" style="margin:0 0 8px;">Pilih sesuai posisi HP saat merekam — deteksi otomatis HP tidak selalu akurat, jadi pilih manual di sini.</div>
+    <div class="stamp-mode-toggle" id="liveStampModeToggle">
+      <button type="button" data-stamp="auto" class="active">🤖 Otomatis</button>
+      <button type="button" data-stamp="lengkap">📋 Lengkap</button>
+      <button type="button" data-stamp="klasik">🗺️ Klasik</button>
+      <button type="button" data-stamp="ringkas">⚡ Ringkas</button>
+      <button type="button" data-stamp="elegan">✨ Elegan</button>
+    </div>
+    <div class="live-gps-status" id="liveStampInfo" style="margin:0 0 6px;">Mode stempel: Otomatis</div>
+    <div class="live-gps-status" style="margin:0 0 8px;">Orientasi "Otomatis" mengikuti posisi HP dan dikunci begitu rekaman dimulai. Kalau rotasi otomatis HP dimatikan, pilih Potret/Lanskap manual.</div>
     <div class="live-preview-wrap">
       <video id="liveCameraPreview" autoplay muted playsinline></video>
       <canvas id="liveStampCanvas"></canvas>

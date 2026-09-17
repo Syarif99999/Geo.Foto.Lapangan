@@ -762,34 +762,317 @@ function readDraftLocationData(){
 
 let liveStream = null, liveRecorder = null, liveChunks = [], liveWatchId = null, liveGpsPollTimer = null;
 let liveGps = null, liveDrawFrame = null, liveRecordingStartedAt = 0, liveMapCrop = null, liveMapKey = '', liveAddress = '';
-// Mode orientasi video dipilih MANUAL oleh pengguna (tombol Potret/Lanskap),
-// bukan dideteksi otomatis dari sensor/OS. Ini sengaja: pengaturan rotasi
-// otomatis Android, kuncian orientasi PWA, dan perilaku getUserMedia yang
-// berbeda-beda antar perangkat membuat deteksi otomatis tidak bisa
-// diandalkan — banyak HP tetap mengirim frame kamera berbentuk potret
-// walau HP diputar fisik ke lanskap. Dengan pilihan manual, hasil rekaman
-// dijamin sesuai keinginan pengguna, apa pun pengaturan perangkatnya.
-let liveOrientMode = 'portrait';
+/* =====================================================================
+   ORIENTASI VIDEO — SEKARANG PUNYA MODE OTOMATIS
+   'auto'      : ikut posisi fisik HP (screen.orientation / window.orientation),
+                 dicek ulang tiap frame pratinjau, jadi stempel & bingkai
+                 langsung menyesuaikan saat HP diputar — TANPA ditekan manual.
+   'portrait'  : dipaksa potret, apa pun posisi HP.
+   'landscape' : dipaksa lanskap, apa pun posisi HP.
+   Mode manual tetap disediakan sebagai jaring pengaman untuk HP yang
+   sensor/rotasi-otomatisnya dimatikan atau tidak akurat.
+   ===================================================================== */
+let liveOrientMode = 'auto';
+let liveOrientLocked = null;   // dikunci saat merekam supaya ukuran kanvas tidak berubah di tengah rekaman
+let liveStampInfoTick = 0;
+
+function detectDeviceOrientation(){
+  try{
+    const t = (screen.orientation && screen.orientation.type) || '';
+    if(t) return t.indexOf('landscape') === 0 ? 'landscape' : 'portrait';
+  }catch(e){}
+  if(typeof window.orientation === 'number'){
+    return Math.abs(window.orientation) === 90 ? 'landscape' : 'portrait';
+  }
+  return window.innerWidth >= window.innerHeight ? 'landscape' : 'portrait';
+}
+function effectiveLiveOrient(){
+  if(liveOrientLocked) return liveOrientLocked;
+  if(liveOrientMode === 'auto') return detectDeviceOrientation();
+  return liveOrientMode === 'landscape' ? 'landscape' : 'portrait';
+}
+
+/* =====================================================================
+   MESIN STEMPEL "GPS MAP CAMERA" — SATU SUMBER UNTUK FOTO & VIDEO
+   Foto tersimpan, pratinjau video live, dan penstempelan ulang video
+   sekarang memakai FUNGSI YANG SAMA (drawGeoStamp), jadi tampilannya
+   dijamin identik: kotak peta satelit + pin di kiri, judul lokasi tebal,
+   alamat, koordinat, tanggal berzona waktu, dan lencana di pojok —
+   seperti GPS Map Camera.
+
+   MODE STEMPEL:
+   - auto    : template DAN warna dipilih sendiri oleh aplikasi
+   - lengkap : judul + alamat 2 baris + koordinat + tanggal + catatan
+   - klasik  : judul + alamat 1 baris + koordinat + tanggal (untuk lanskap)
+   - ringkas : hanya koordinat + tanggal, tanpa kotak peta (frame kecil)
+   - elegan  : panel terang, kotak peta bulat, garis aksen emas
+   ===================================================================== */
+const STAMP_MODES = ['auto','lengkap','klasik','ringkas','elegan'];
+const STAMP_MODE_LABEL = { auto:'Otomatis', lengkap:'Lengkap', klasik:'Klasik', ringkas:'Ringkas', elegan:'Elegan' };
+let stampMode = 'auto';
+try{
+  const savedStampMode = localStorage.getItem('geoFotoStampMode');
+  if(savedStampMode && STAMP_MODES.indexOf(savedStampMode) >= 0) stampMode = savedStampMode;
+}catch(e){}
+let lastStampResolution = { template:'lengkap', theme:'gelap' };
+
+const STAMP_THEME = {
+  gelap:{ panel:'rgba(11,19,32,0.82)', border:'rgba(255,255,255,0.10)', title:'#ffffff', sub:'#cfd8e4',
+          coord:'#ffd166', date:'#b6c1d1', credit:'#8d9aab', badgeBg:'rgba(224,179,84,0.94)', badgeText:'#10233f' },
+  terang:{ panel:'rgba(247,249,252,0.90)', border:'rgba(15,38,71,0.14)', title:'#0f2033', sub:'#3d4c60',
+          coord:'#8a5b00', date:'#5a6779', credit:'#7b8798', badgeBg:'rgba(15,38,71,0.94)', badgeText:'#ffd98a' }
+};
+
+// Rata-rata kecerahan bagian bawah frame — dipakai mode OTOMATIS untuk
+// memilih panel gelap (di atas gambar terang) atau panel terang (di atas
+// gambar gelap), supaya stempel selalu terbaca.
+// Hanya beberapa petak kecil yang dibaca (bukan seluruh area) dan hasilnya
+// disimpan sebentar, supaya tidak membebani pratinjau video 30 fps.
+let stampBrightnessBlocked = false;
+let stampBrightnessCache = { at:0, value:null };
+function sampleFrameBrightness(ctx, x, y, w, h){
+  if(stampBrightnessBlocked) return null;
+  const now = Date.now();
+  if(stampBrightnessCache.value != null && now - stampBrightnessCache.at < 700) return stampBrightnessCache.value;
+  try{
+    const pw = Math.max(8, Math.min(48, Math.round(w/12)));
+    const ph = Math.max(6, Math.min(32, Math.round(h/4)));
+    const spots = [x + w*0.10, x + w*0.45, x + w*0.80];
+    let sum = 0, n = 0;
+    spots.forEach(sx => {
+      const px = Math.max(0, Math.min(Math.round(sx), Math.round(x + w) - pw));
+      const py = Math.max(0, Math.round(y + h/2 - ph/2));
+      const d = ctx.getImageData(px, py, pw, ph).data;
+      for(let i = 0; i + 2 < d.length; i += 16){
+        sum += 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2];
+        n++;
+      }
+    });
+    const val = n ? sum/n : null;
+    stampBrightnessCache = { at:now, value:val };
+    return val;
+  }catch(e){
+    // Kanvas "tainted" (mis. tile peta tanpa izin CORS) — berhenti mencoba,
+    // jangan lempar error tiap frame.
+    stampBrightnessBlocked = true;
+    return null;
+  }
+}
+
+// Otak mode OTOMATIS: menentukan template + warna dari bentuk frame,
+// kelengkapan data, dan kecerahan bagian bawah gambar.
+function resolveStampStyle(ctx, W, H, data, mode, forcedTheme){
+  let template = (mode && mode !== 'auto') ? mode : null;
+  let theme = forcedTheme || null;
+  if(!template){
+    const base = Math.min(W, H);
+    const isLandscape = W >= H;
+    const punyaIsi = !!((data.address && data.address.length > 3) || (data.title && data.title.length > 3));
+    if(base < 420) template = 'ringkas';              // frame kecil: teks panjang malah tidak terbaca
+    else if(!punyaIsi) template = 'ringkas';          // alamat belum ketemu: jangan pasang baris kosong
+    else if(isLandscape) template = 'klasik';         // lanskap: panel pendek supaya objek tidak tertutup
+    else template = 'lengkap';
+  }
+  if(!theme){
+    const lum = sampleFrameBrightness(ctx, W*0.04, H*0.74, W*0.92, H*0.22);
+    // Ambang beda untuk naik/turun (histeresis) supaya warna panel tidak
+    // berkedip bolak-balik saat kecerahan gambar pas di perbatasan.
+    const sebelumnya = lastStampResolution.theme;
+    if(lum == null) theme = sebelumnya || 'gelap';
+    else if(sebelumnya === 'terang') theme = lum < 148 ? 'gelap' : 'terang';
+    else theme = lum > 180 ? 'terang' : 'gelap';
+  }
+  if(template === 'elegan') theme = 'terang';
+  lastStampResolution = { template, theme };
+  return { template, theme };
+}
+
+function stampStatusText(){
+  const r = lastStampResolution;
+  const nama = STAMP_MODE_LABEL[r.template] || r.template;
+  return stampMode === 'auto'
+    ? `Mode stempel: Otomatis → ${nama} (${r.theme})`
+    : `Mode stempel: ${STAMP_MODE_LABEL[stampMode] || stampMode}`;
+}
+
+// Penggambar stempel. ctx sudah berisi gambar/frame; fungsi ini hanya
+// menambahkan panel di bagian bawah.
+function drawGeoStamp(ctx, W, H, data, options){
+  options = options || {};
+  const style = resolveStampStyle(ctx, W, H, data, options.mode || stampMode, options.theme);
+  const template = style.template, theme = style.theme;
+  const C = STAMP_THEME[theme];
+  const base = Math.min(W, H);
+  const compact = template === 'ringkas';
+  const showMap = !compact;
+  const margin = Math.max(8, Math.round(base * (compact ? 0.018 : 0.024)));
+  const pad = Math.max(8, Math.round(base * 0.026));
+  const gap = Math.max(6, Math.round(base * 0.022));
+
+  const title = String(data.title || '').trim();
+  const address = String(data.address || '').trim();
+  const note = String(data.note || '').trim();
+  const punyaKoordinat = data.lat != null && data.lng != null && isFinite(data.lat) && isFinite(data.lng);
+  const coordLine = punyaKoordinat
+    ? `Lat ${Number(data.lat).toFixed(6)}°  Long ${Number(data.lng).toFixed(6)}°`
+    : (data.coordFallback || 'GPS mencari lokasi...');
+  const dateLine = data.dateText || formatStampDate(data.timestamp || Date.now());
+  const credit = data.credit || 'Geo Foto Lapangan · BAPENDA Paser';
+
+  const fsTitle = Math.max(11, Math.round(base * (compact ? 0.026 : 0.032)));
+  const fsBody  = Math.max(9,  Math.round(base * 0.019));
+  const fsCoord = Math.max(10, Math.round(base * 0.023));
+  const fsSmall = Math.max(8,  Math.round(base * 0.016));
+
+  let mapSize = showMap ? Math.min(Math.round(base * (W >= H ? 0.17 : 0.21)), Math.round(H * 0.20)) : 0;
+  let panelW = compact ? 0 : (W - margin * 2);
+  let textW = compact ? Math.max(40, W - margin*2 - pad*2)
+                      : Math.max(40, panelW - pad*2 - (showMap ? mapSize + gap : 0));
+
+  const rows = [];
+  if(!compact){
+    if(title)   rows.push({ text:title,   size:fsTitle, weight:'700', color:C.title, wrap:true, max:2 });
+    if(address) rows.push({ text:address, size:fsBody,  color:C.sub,  wrap:true, max: template === 'lengkap' ? 2 : 1 });
+  }
+  rows.push({ text:coordLine, size:fsCoord, weight:'700', color:C.coord, mono:true });
+  rows.push({ text:dateLine,  size:fsSmall, color:C.date });
+  if(template === 'lengkap' && note) rows.push({ text:note, size:fsSmall, color:C.sub, wrap:true, max:1 });
+  if(!compact) rows.push({ text:credit, size:fsSmall, color:C.credit });
+
+  const lines = [];
+  rows.forEach(r => {
+    const family = r.mono ? 'monospace' : 'Arial, sans-serif';
+    if(r.wrap){
+      ctx.font = `${r.weight ? r.weight + ' ' : ''}${r.size}px ${family}`;
+      wrapText(ctx, r.text, textW).slice(0, r.max || 2).forEach(t => {
+        lines.push({ text:t, size:r.size, weight:r.weight, color:r.color, family });
+      });
+    }else{
+      // baris satu-baris otomatis mengecil kalau kepanjangan — tidak pernah terpotong
+      const size = fitSingleLineFontSize(ctx, r.text, r.size, family, r.weight || '', textW, Math.max(8, r.size*0.55));
+      lines.push({ text:r.text, size, weight:r.weight, color:r.color, family });
+    }
+  });
+
+  const lineH = l => Math.round(l.size * 1.34);
+  let textH = 0;
+  const recalc = () => {
+    textH = 0; lines.forEach(l => { textH += lineH(l); });
+    return Math.max(showMap ? mapSize + pad*2 : 0, textH + pad*2);
+  };
+  let panelH = recalc();
+  const maxPanelH = Math.round(H * (compact ? 0.16 : 0.30));
+  while(panelH > maxPanelH && lines.length > 2){ lines.pop(); panelH = recalc(); }
+  if(panelH > maxPanelH){
+    const k = Math.max(0.55, maxPanelH / panelH);
+    lines.forEach(l => { l.size = Math.max(8, Math.round(l.size * k)); });
+    if(showMap) mapSize = Math.round(mapSize * k);
+    panelH = recalc();
+  }
+
+  if(compact){
+    let w = 0;
+    lines.forEach(l => { ctx.font = `${l.weight ? l.weight + ' ' : ''}${l.size}px ${l.family}`; w = Math.max(w, ctx.measureText(l.text).width); });
+    panelW = Math.min(W - margin*2, Math.round(w + pad*2));
+  }
+
+  const panelX = margin;
+  const panelY = H - margin - panelH;
+
+  ctx.save();
+  roundRectPath(ctx, panelX, panelY, panelW, panelH, Math.max(8, Math.round(base*0.018)));
+  ctx.fillStyle = C.panel; ctx.fill();
+  ctx.lineWidth = Math.max(1, base*0.002); ctx.strokeStyle = C.border; ctx.stroke();
+  ctx.restore();
+
+  if(template === 'elegan'){
+    ctx.fillStyle = 'rgba(200,149,44,0.92)';
+    ctx.fillRect(panelX, panelY + pad*0.6, Math.max(2, Math.round(base*0.005)), panelH - pad*1.2);
+  }
+
+  let textX = panelX + pad;
+  if(showMap){
+    const mapX = panelX + pad + (template === 'elegan' ? Math.round(base*0.008) : 0);
+    const mapY = panelY + (panelH - mapSize)/2;
+    ctx.save();
+    roundRectPath(ctx, mapX, mapY, mapSize, mapSize, template === 'elegan' ? mapSize/2 : Math.max(6, Math.round(base*0.012)));
+    ctx.clip();
+    if(data.mapCrop){
+      ctx.drawImage(data.mapCrop.canvas, data.mapCrop.sx, data.mapCrop.sy, data.mapCrop.sw, data.mapCrop.sh, mapX, mapY, mapSize, mapSize);
+    }else{
+      const g = ctx.createLinearGradient(mapX, mapY, mapX+mapSize, mapY+mapSize);
+      g.addColorStop(0,'#697b5e'); g.addColorStop(.5,'#98a57e'); g.addColorStop(1,'#40563e');
+      ctx.fillStyle = g; ctx.fillRect(mapX, mapY, mapSize, mapSize);
+    }
+    // lingkaran akurasi biru khas tampilan GPS
+    ctx.beginPath();
+    ctx.ellipse(mapX + mapSize*0.5, mapY + mapSize*0.66, mapSize*0.28, mapSize*0.13, 0, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(66,133,244,0.35)'; ctx.fill();
+    if(data.mapCrop){
+      ctx.font = `${Math.max(6, Math.round(mapSize*0.11))}px Arial`;
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+      ctx.fillText('Esri', mapX + mapSize*0.07, mapY + mapSize*0.96);
+    }
+    ctx.restore();
+    drawMapPin(ctx, mapX + mapSize*0.5, mapY + mapSize*0.62, mapSize*0.5, '#ff3b30');
+    textX = mapX + mapSize + gap;
+  }
+
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  const textRight = panelX + panelW - pad;
+  let y = panelY + Math.max(pad, (panelH - textH)/2);
+  lines.forEach(l => {
+    ctx.font = `${l.weight ? l.weight + ' ' : ''}${l.size}px ${l.family}`;
+    ctx.fillStyle = l.color;
+    ctx.fillText(l.text, textX, y, Math.max(20, textRight - textX));
+    y += lineH(l);
+  });
+
+  if(!compact && options.badge !== false){
+    const bt = data.badge || 'Geo Foto Lapangan';
+    const bs = Math.max(8, Math.round(base*0.015));
+    ctx.font = `700 ${bs}px Arial`;
+    const bw = ctx.measureText(bt).width + bs*1.7, bh = Math.round(bs*2);
+    const bx = panelX + panelW - bw - Math.round(pad*0.4);
+    const by = Math.max(2, panelY - bh - Math.max(4, Math.round(base*0.008)));
+    roundRectPath(ctx, bx, by, bw, bh, bh/2);
+    ctx.fillStyle = C.badgeBg; ctx.fill();
+    ctx.fillStyle = C.badgeText; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(bt, bx + bw/2, by + bh/2);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  }
+  return style;
+}
+
+function setStampMode(mode){
+  stampMode = (STAMP_MODES.indexOf(mode) >= 0) ? mode : 'auto';
+  try{ localStorage.setItem('geoFotoStampMode', stampMode); }catch(e){}
+  document.querySelectorAll('.stamp-mode-toggle button[data-stamp]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.stamp === stampMode);
+  });
+  const info = document.getElementById('liveStampInfo');
+  if(info) info.textContent = stampStatusText();
+}
 
 function setLiveGpsStatus(text){
   const el = document.getElementById('liveGpsStatus'); if(el) el.textContent = text;
 }
-// Rotasi ditentukan dari PILIHAN MANUAL pengguna (tombol Potret/Lanskap)
-// dibandingkan dengan bentuk asli frame kamera (videoWidth vs videoHeight)
-// — bukan dari screen.orientation/rotasi fisik HP, yang tidak bisa
-// diandalkan (lihat catatan pada deklarasi liveOrientMode di atas).
+
 function getLiveRotation(video){
-  const sourceW = video.videoWidth || (liveOrientMode === 'landscape' ? 1280 : 720);
-  const sourceH = video.videoHeight || (liveOrientMode === 'landscape' ? 720 : 1280);
+  const want = effectiveLiveOrient();
+  const sourceW = video.videoWidth || (want === 'landscape' ? 1280 : 720);
+  const sourceH = video.videoHeight || (want === 'landscape' ? 720 : 1280);
   const sourceIsLandscape = sourceW >= sourceH;
-  const wantLandscape = liveOrientMode === 'landscape';
+  const wantLandscape = want === 'landscape';
   if(wantLandscape && !sourceIsLandscape) return 90;
   if(!wantLandscape && sourceIsLandscape) return -90;
   return 0;
 }
 function syncLiveOutputCanvas(video, canvas){
-  const sourceW = video.videoWidth || (liveOrientMode === 'landscape' ? 1280 : 720);
-  const sourceH = video.videoHeight || (liveOrientMode === 'landscape' ? 720 : 1280);
+  const want = effectiveLiveOrient();
+  const sourceW = video.videoWidth || (want === 'landscape' ? 1280 : 720);
+  const sourceH = video.videoHeight || (want === 'landscape' ? 720 : 1280);
   const rotation = getLiveRotation(video);
   const outW = rotation ? sourceH : sourceW;
   const outH = rotation ? sourceW : sourceH;
@@ -799,17 +1082,19 @@ function syncLiveOutputCanvas(video, canvas){
   return rotation;
 }
 function setLiveOrientMode(mode){
-  liveOrientMode = mode === 'landscape' ? 'landscape' : 'portrait';
-  const btnP = document.getElementById('btnOrientPortrait');
-  const btnL = document.getElementById('btnOrientLandscape');
-  if(btnP) btnP.classList.toggle('active', liveOrientMode === 'portrait');
-  if(btnL) btnL.classList.toggle('active', liveOrientMode === 'landscape');
+  liveOrientMode = (mode === 'landscape' || mode === 'portrait') ? mode : 'auto';
+  ['btnOrientAuto','btnOrientPortrait','btnOrientLandscape'].forEach(id => {
+    const b = document.getElementById(id);
+    if(b) b.classList.toggle('active', b.dataset.orient === liveOrientMode);
+  });
   const video = document.getElementById('liveCameraPreview'), canvas = document.getElementById('liveStampCanvas');
   if(video && canvas) syncLiveOutputCanvas(video, canvas);
 }
 // Loop penggambaran berjalan SEJAK modal dibuka (bukan cuma saat merekam),
-// supaya pengguna langsung melihat pratinjau stempel + orientasi yang
-// dipilih sebelum menekan "Mulai Rekam" — persis seperti alur foto.
+// supaya pengguna langsung melihat pratinjau stempel + orientasi sebelum
+// menekan "Mulai Rekam". Karena syncLiveOutputCanvas() dipanggil tiap frame
+// dan memakai effectiveLiveOrient(), mode OTOMATIS langsung ikut berputar
+// begitu HP diputar — tanpa menekan tombol apa pun.
 function startLivePreviewLoop(){
   const video = document.getElementById('liveCameraPreview'), canvas = document.getElementById('liveStampCanvas');
   const ctx = canvas.getContext('2d');
@@ -817,6 +1102,10 @@ function startLivePreviewLoop(){
     if(!liveStream){ liveDrawFrame = null; return; }
     const rotation = syncLiveOutputCanvas(video, canvas);
     drawLiveStamp(ctx, canvas, video, rotation);
+    if((liveStampInfoTick++ % 15) === 0){
+      const info = document.getElementById('liveStampInfo');
+      if(info) info.textContent = `${stampStatusText()} · Bingkai: ${effectiveLiveOrient() === 'landscape' ? 'Lanskap' : 'Potret'}`;
+    }
     liveDrawFrame = requestAnimationFrame(loop);
   };
   loop();
@@ -828,6 +1117,7 @@ function closeLiveRecordModal(){
   if(liveGpsPollTimer != null) clearInterval(liveGpsPollTimer);
   liveGpsPollTimer = null;
   liveMapCrop = null; liveMapKey = ''; liveAddress = '';
+  liveOrientLocked = null;
   if(liveDrawFrame) cancelAnimationFrame(liveDrawFrame);
   liveDrawFrame = null;
   if(liveStream) liveStream.getTracks().forEach(t => t.stop());
@@ -851,7 +1141,9 @@ async function openLiveRecordModal(){
   const modal = document.getElementById('liveRecordModal');
   const video = document.getElementById('liveCameraPreview');
   modal.classList.add('show');
-  setLiveOrientMode('portrait');
+  liveOrientLocked = null;
+  setLiveOrientMode(liveOrientMode);
+  setStampMode(stampMode);
   setLiveGpsStatus('Meminta izin kamera dan GPS...');
   try{
     liveStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:true });
@@ -882,16 +1174,15 @@ async function openLiveRecordModal(){
     fallbackToDeviceCamera();
   }
 }
+// Pratinjau/rekaman live: gambar frame kamera (diputar bila perlu), lalu
+// pasang stempel dengan MESIN YANG SAMA seperti foto & video tersimpan.
 function drawLiveStamp(ctx, canvas, video, rotation=0){
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
   ctx.save();
   if(rotation === 90 || rotation === -90){
-    // Putar video di sekitar TITIK TENGAH kanvas, memakai ukuran asli
-    // video (bukan ukuran kanvas yang sudah ditukar) — cara ini jauh
-    // lebih aman dari salah hitung dibanding translate+rotate manual
-    // yang dipakai sebelumnya, dan selalu pas mengisi kanvas penuh
-    // selama W dan H memang sudah benar (tinggi↔lebar tertukar).
+    // Putar video di sekitar TITIK TENGAH kanvas memakai ukuran asli video
+    // (bukan ukuran kanvas yang sudah ditukar) — aman dari salah hitung.
     const vw = video.videoWidth || H;
     const vh = video.videoHeight || W;
     ctx.translate(W / 2, H / 2);
@@ -902,64 +1193,15 @@ function drawLiveStamp(ctx, canvas, video, rotation=0){
   }
   ctx.restore();
 
-  // Stempel selalu turun ke bagian bawah frame dan mengikuti ukuran asli
-  // kamera. Tidak ada posisi tengah-kiri yang membuat objek lapangan tertutup.
-  const base = Math.min(W, H);
-  const margin = Math.max(12, Math.round(base * 0.035));
-  const pad = Math.max(10, Math.round(base * 0.025));
-  const mapSize = Math.max(72, Math.round(base * (W >= H ? 0.16 : 0.19)));
-  const panelW = Math.min(W - margin * 2, Math.round(W * (W >= H ? 0.72 : 0.92)));
-  const textW = panelW - pad * 2 - mapSize - pad;
-  const titleSize = Math.max(12, Math.round(base * 0.026));
-  const bodySize = Math.max(10, Math.round(base * 0.017));
-  const lineH = Math.max(16, Math.round(bodySize * 1.35));
-  const gps = liveGps ? `Lat ${liveGps.lat.toFixed(6)}°  Long ${liveGps.lng.toFixed(6)}°` : 'GPS mencari lokasi...';
-  const rows = [
-    { text:'Geo Foto Lapangan', size:titleSize, color:'#fff', weight:'700' },
-    { text:liveAddress || 'Lokasi sedang dicari...', size:bodySize, color:'#d8dde5' },
-    { text:gps, size:bodySize, color:'#e0b354', weight:'700' },
-    { text:new Date().toLocaleString('id-ID'), size:bodySize, color:'#b8c0cc' },
-    { text:'GPS LIVE', size:bodySize, color:'#63e6a2', weight:'700' }
-  ];
-  const maxLines = Math.max(3, Math.floor((H * 0.25 - pad * 2) / lineH));
-  const visibleRows = rows.slice(0, maxLines);
-  const panelH = Math.min(Math.round(H * 0.27), Math.max(mapSize + pad * 2, visibleRows.length * lineH + pad * 2));
-  const panelX = margin;
-  const panelY = H - margin - panelH;
-
-  ctx.save();
-  roundRectPath(ctx, panelX, panelY, panelW, panelH, Math.max(8, Math.round(base * .018)));
-  ctx.fillStyle = 'rgba(15,25,40,.88)';
-  ctx.fill();
-  ctx.restore();
-
-  const mapX = panelX + pad;
-  const mapY = panelY + (panelH - mapSize) / 2;
-  ctx.save();
-  roundRectPath(ctx, mapX, mapY, mapSize, mapSize, Math.max(6, Math.round(base * .012)));
-  ctx.clip();
-  if(liveMapCrop){
-    ctx.drawImage(liveMapCrop.canvas, liveMapCrop.sx, liveMapCrop.sy, liveMapCrop.sw, liveMapCrop.sh, mapX, mapY, mapSize, mapSize);
-  } else {
-    const g=ctx.createLinearGradient(mapX,mapY,mapX+mapSize,mapY+mapSize);
-    g.addColorStop(0,'#697b5e'); g.addColorStop(.5,'#98a57e'); g.addColorStop(1,'#40563e');
-    ctx.fillStyle=g; ctx.fillRect(mapX,mapY,mapSize,mapSize);
-  }
-  ctx.restore();
-  drawMapPin(ctx, mapX + mapSize*.5, mapY + mapSize*.62, mapSize*.55, '#ff3b30');
-
-  const textX = mapX + mapSize + pad;
-  const maxTextWidth = Math.max(40, textW);
-  let y = panelY + pad;
-  ctx.textAlign='left'; ctx.textBaseline='top';
-  visibleRows.forEach(row => {
-    ctx.font = `${row.weight || ''} ${row.size}px Arial`;
-    const lines = wrapText(ctx, row.text, maxTextWidth).slice(0, 2);
-    lines.forEach(line => {
-      ctx.fillStyle = row.color;
-      ctx.fillText(line, textX, y, maxTextWidth);
-      y += lineH;
-    });
+  drawGeoStamp(ctx, W, H, {
+    title: deriveRegionTitle(liveAddress) || 'Geo Foto Lapangan',
+    address: liveAddress || 'Lokasi sedang dicari...',
+    lat: liveGps ? liveGps.lat : null,
+    lng: liveGps ? liveGps.lng : null,
+    coordFallback: 'GPS mencari lokasi...',
+    timestamp: Date.now(),
+    mapCrop: liveMapCrop,
+    badge: liveGps ? '● GPS LIVE' : '○ GPS mencari'
   });
 }
 async function startLiveRecording(){
@@ -969,6 +1211,10 @@ async function startLiveRecording(){
     setTimeout(() => document.getElementById('inputVideo').click(), 120);
     return;
   }
+  // Orientasi dibekukan pada nilai yang sedang aktif (termasuk hasil deteksi
+  // OTOMATIS) begitu rekaman dimulai — ukuran kanvas tidak boleh berubah di
+  // tengah rekaman karena akan merusak file videonya.
+  liveOrientLocked = effectiveLiveOrient();
   const canvas=document.getElementById('liveStampCanvas');
   // Kanvas ini sudah aktif digambar oleh startLivePreviewLoop() sejak modal
   // dibuka, jadi rekaman tinggal menangkap stream dari kanvas yang sama —
@@ -1017,6 +1263,11 @@ async function generateStampedVideo(entry){
   canvas.width = Math.max(2, Math.round(width * scale));
   canvas.height = Math.max(2, Math.round(height * scale));
   const ctx = canvas.getContext('2d');
+  // Citra satelit diunduh SEKALI sebelum perekaman, lalu dipakai ulang tiap
+  // frame — dulu video cuma dapat kotak hijau gradien, sekarang peta asli
+  // seperti pada foto.
+  let mapCrop = null;
+  try { mapCrop = await loadSatelliteMapCrop(entry.lat, entry.lng, 17, 256); } catch(e) {}
   const stream = canvas.captureStream(30);
   let sourceStream = null;
   try { sourceStream = video.captureStream ? video.captureStream() : null; } catch(e) {}
@@ -1029,49 +1280,35 @@ async function generateStampedVideo(entry){
   const chunks = [];
   recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
   const stopped = new Promise((resolve, reject) => { recorder.onstop = resolve; recorder.onerror = e => reject(e.error || e); });
-  const address = entry.addressManual || entry.addressAuto || '';
-  const draw = () => {
-    const W=canvas.width, H=canvas.height, base=Math.min(W,H);
-    ctx.clearRect(0,0,W,H); ctx.drawImage(video,0,0,W,H);
-    // Panel bawah adaptif: lebar dan tinggi mengikuti orientasi video.
-    const margin=Math.max(12,Math.round(base*.035)), pad=Math.max(10,Math.round(base*.025));
-    const mapSize=Math.max(72,Math.round(base*(W>=H?.16:.19)));
-    const panelW=Math.min(W-margin*2,Math.round(W*(W>=H?.72:.92)));
-    const titleSize=Math.max(12,Math.round(base*.026));
-    const bodySize=Math.max(10,Math.round(base*.017));
-    const lineH=Math.max(16,Math.round(bodySize*1.35));
-    const gps=`Lat ${Number(entry.lat).toFixed(6)}°  Long ${Number(entry.lng).toFixed(6)}°`;
-    const rows=[
-      {text:entry.businessName || 'Geo Foto Lapangan',size:titleSize,color:'#fff',weight:'700'},
-      {text:address || 'Lokasi lapangan',size:bodySize,color:'#d8dde5'},
-      {text:gps,size:bodySize,color:'#e0b354',weight:'700'},
-      {text:formatStampDate(entry.timestamp),size:bodySize,color:'#b8c0cc'},
-      {text:'Geo Foto Lapangan · BAPENDA Paser',size:bodySize,color:'#93a0b0'}
-    ];
-    const maxTextW=Math.max(40,panelW-pad*2-mapSize-pad);
-    const textLines=[];
-    rows.forEach(row=>{
-      ctx.font=`${row.weight||''} ${row.size}px Arial`;
-      wrapText(ctx,row.text,maxTextW).slice(0,2).forEach(line=>textLines.push({...row,text:line}));
-    });
-    const maxLines=Math.max(3,Math.floor((H*.25-pad*2)/lineH));
-    const shown=textLines.slice(0,maxLines);
-    const panelH=Math.min(Math.round(H*.27),Math.max(mapSize+pad*2,shown.length*lineH+pad*2));
-    const panelX=margin,panelY=H-margin-panelH;
-    ctx.save();roundRectPath(ctx,panelX,panelY,panelW,panelH,Math.max(8,Math.round(base*.018)));ctx.fillStyle='rgba(15,25,40,.88)';ctx.fill();ctx.restore();
-    const mapX=panelX+pad,mapY=panelY+(panelH-mapSize)/2;
-    ctx.save();roundRectPath(ctx,mapX,mapY,mapSize,mapSize,Math.max(6,Math.round(base*.012)));ctx.clip();
-    const g=ctx.createLinearGradient(mapX,mapY,mapX+mapSize,mapY+mapSize);g.addColorStop(0,'#697b5e');g.addColorStop(.5,'#98a57e');g.addColorStop(1,'#40563e');ctx.fillStyle=g;ctx.fillRect(mapX,mapY,mapSize,mapSize);ctx.restore();
-    drawMapPin(ctx,mapX+mapSize*.5,mapY+mapSize*.62,mapSize*.55,'#ff3b30');
-    let y=panelY+pad;ctx.textAlign='left';ctx.textBaseline='top';
-    shown.forEach(row=>{ctx.font=`${row.weight||''} ${row.size}px Arial`;ctx.fillStyle=row.color;ctx.fillText(row.text,mapX+mapSize+pad,y,maxTextW);y+=lineH;});
-    if(!video.paused&&!video.ended) requestAnimationFrame(draw);
+  const stampData = {
+    title: entry.businessName || deriveRegionTitle(entry.addressManual || entry.addressAuto || '') || catLabel(entry.category),
+    address: entry.addressManual || entry.addressAuto || '',
+    note: entry.note || '',
+    lat: entry.lat, lng: entry.lng,
+    timestamp: entry.timestamp,
+    mapCrop,
+    badge: 'Geo Foto Lapangan'
   };
-  video.currentTime=0; await video.play(); recorder.start(250); draw();
-  await stoppedAfterVideo(video,recorder,Date.now()); await stopped;
-  stream.getTracks().forEach(track=>track.stop()); if(sourceStream) sourceStream.getTracks().forEach(track=>track.stop());
+  // Mode stempel dikunci di frame pertama supaya template/warnanya tidak
+  // berkedip-ganti di tengah video (mode OTOMATIS dievaluasi sekali saja).
+  let locked = null;
+  let first = true;
+  const draw = () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if(first){
+      locked = drawGeoStamp(ctx, canvas.width, canvas.height, stampData, { mode: stampMode });
+      first = false;
+    }else{
+      drawGeoStamp(ctx, canvas.width, canvas.height, stampData, { mode: locked.template, theme: locked.theme });
+    }
+    if(!video.paused && !video.ended) requestAnimationFrame(draw);
+  };
+  video.currentTime = 0; await video.play(); recorder.start(250); draw();
+  await stoppedAfterVideo(video, recorder, Date.now()); await stopped;
+  stream.getTracks().forEach(track => track.stop()); if(sourceStream) sourceStream.getTracks().forEach(track => track.stop());
   URL.revokeObjectURL(video.src);
-  return new Blob(chunks,{type:mimeType||'video/webm'});
+  return new Blob(chunks, { type: mimeType || 'video/webm' });
 }
 
 function stoppedAfterVideo(video, recorder, startedAt){
@@ -1727,139 +1964,25 @@ async function generateStampedPhoto(entry){
   const address = entry.addressManual || entry.addressAuto || '';
   const businessName = entry.businessName || '';
   const catText = catLabel(entry.category);
-  const coordLine = `Lat ${entry.lat.toFixed(6)}, Long ${entry.lng.toFixed(6)}`;
-  const dateLine = formatStampDate(entry.timestamp);
-  const regionTitle = businessName || deriveRegionTitle(address) || catText;
-  const creditText = 'Dicatat: GeoFoto Lapangan · BAPENDA Paser';
 
-  // Basis ukuran dipakai dari sisi TERPENDEK foto (bukan lebar saja) supaya foto
-  // lanskap (lebar tapi pendek) tidak menghasilkan kotak stempel yang kebesaran.
-  const base = Math.min(W, H);
-  const lineSpacing = 1.32;
+  // Citra satelit untuk kotak peta kecil di kiri panel.
+  let mapCrop = null;
+  try { mapCrop = await loadSatelliteMapCrop(entry.lat, entry.lng, 17, 256); } catch(e) {}
 
-  function buildLayout(scale){
-    const outerMargin = base * 0.030 * scale;
-    const innerPad = base * 0.032 * scale;
-    const mapBoxGap = base * 0.026 * scale;
-    const mapBoxSize = base * 0.20 * scale;
-
-    const fsTitle = base * 0.034 * scale;
-    const fsSub   = base * 0.021 * scale;
-    const fsCoord = base * 0.026 * scale;
-    const fsSmall = base * 0.017 * scale;
-    const fsTiny  = base * 0.014 * scale;
-
-    // Batas lebar kolom teks TIDAK mengikuti lebar foto penuh — dibatasi relatif
-    // terhadap sisi terpendek foto, supaya di foto lanskap kotaknya tidak melebar
-    // jadi bilah panjang, melainkan tetap kompak seperti di foto potrait.
-    const availableWidth = W - outerMargin*2 - innerPad*2 - mapBoxGap - mapBoxSize;
-    const maxTextColWidth = Math.min(availableWidth, base * 1.55 * scale);
-
-    ctx.font = `${fsSub}px sans-serif`;
-    const addrLines = address ? wrapText(ctx, address, maxTextColWidth).slice(0,2) : [];
-
-    // Ukuran huruf baris satu-baris (judul, kategori, koordinat, tanggal) otomatis
-    // dikecilkan lagi kalau teksnya kepanjangan, supaya TIDAK PERNAH kepotong di tepi foto.
-    const titleSize = fitSingleLineFontSize(ctx, regionTitle, fsTitle, 'sans-serif', 'bold', maxTextColWidth, fsTitle*0.5);
-    const catSize = businessName ? fitSingleLineFontSize(ctx, catText, fsSub, 'sans-serif', '', maxTextColWidth, fsSub*0.55) : fsSub;
-    const coordSize = fitSingleLineFontSize(ctx, coordLine, fsCoord, 'monospace', 'bold', maxTextColWidth, fsCoord*0.5);
-    const dateSize = fitSingleLineFontSize(ctx, dateLine, fsSmall, 'sans-serif', '', maxTextColWidth, fsSmall*0.55);
-    const creditSize = fitSingleLineFontSize(ctx, creditText, fsTiny, 'sans-serif', '', maxTextColWidth, fsTiny*0.55);
-
-    const textLines = [];
-    textLines.push({ text: regionTitle, font:`bold ${titleSize}px sans-serif`, size:titleSize, color:'#ffffff' });
-    if(businessName) textLines.push({ text: catText, font:`${catSize}px sans-serif`, size:catSize, color:'#cfd6e0' });
-    addrLines.forEach(l => textLines.push({ text:l, font:`${fsSub}px sans-serif`, size:fsSub, color:'#d8dde5' }));
-    textLines.push({ text: coordLine, font:`bold ${coordSize}px monospace`, size:coordSize, color:'#e0b354' });
-    textLines.push({ text: dateLine, font:`${dateSize}px sans-serif`, size:dateSize, color:'#b8c0cc' });
-    textLines.push({ text: creditText, font:`${creditSize}px sans-serif`, size:creditSize, color:'#93a0b0' });
-
-    // Lebar kolom teks yang SEBENARNYA dipakai = teks terpanjang yang benar-benar
-    // dirender (bukan otomatis selebar-lebarnya) — ini yang bikin kotak jadi
-    // sebesar isinya, seperti kartu, bukan bilah selebar foto.
-    let textColWidth = 0;
-    textLines.forEach(l => {
-      ctx.font = l.font;
-      textColWidth = Math.max(textColWidth, ctx.measureText(l.text).width);
-    });
-    textColWidth = Math.min(textColWidth, maxTextColWidth);
-
-    const panelWidth = innerPad + mapBoxSize + mapBoxGap + textColWidth + innerPad;
-
-    let textBlockHeight = 0;
-    textLines.forEach(l => textBlockHeight += l.size * lineSpacing);
-    const panelHeight = Math.max(mapBoxSize, textBlockHeight) + innerPad*2;
-
-    return { outerMargin, innerPad, mapBoxGap, mapBoxSize, panelWidth, textColWidth, textLines, textBlockHeight, panelHeight };
-  }
-
-  // Kotak stempel dibatasi maksimal 24% dari TINGGI foto — kalau dengan ukuran
-  // normal ternyata masih lebih tinggi dari itu (foto lanskap pendek / teks banyak),
-  // semua elemen otomatis diperkecil proporsional sekali lagi.
-  let layout = buildLayout(1);
-  const maxPanelHeight = H * 0.24;
-  if(layout.panelHeight > maxPanelHeight){
-    const scale = Math.max(0.45, maxPanelHeight / layout.panelHeight);
-    layout = buildLayout(scale);
-  }
-
-  const { outerMargin, innerPad, mapBoxGap, mapBoxSize, panelWidth, textLines, textBlockHeight, panelHeight } = layout;
-
-  const panelX = outerMargin;
-  const panelY = H - outerMargin - panelHeight;
-  const panelRadius = base * 0.018;
-
-  // panel gelap
-  roundRectPath(ctx, panelX, panelY, panelWidth, panelHeight, panelRadius);
-  ctx.fillStyle = 'rgba(15,25,40,0.85)';
-  ctx.fill();
-
-  // kotak mini-map di kiri
-  const mapBoxX = panelX + innerPad;
-  const mapBoxY = panelY + (panelHeight - mapBoxSize)/2;
-  ctx.save();
-  roundRectPath(ctx, mapBoxX, mapBoxY, mapBoxSize, mapBoxSize, base*0.014);
-  ctx.clip();
-  const satCrop = await loadSatelliteMapCrop(entry.lat, entry.lng, 17, mapBoxSize);
-  if(satCrop){
-    ctx.drawImage(satCrop.canvas, satCrop.sx, satCrop.sy, satCrop.sw, satCrop.sh,
-      mapBoxX, mapBoxY, mapBoxSize, mapBoxSize);
-  } else {
-    const mgrad = ctx.createLinearGradient(mapBoxX, mapBoxY, mapBoxX+mapBoxSize, mapBoxY+mapBoxSize);
-    mgrad.addColorStop(0, '#7c8f6e');
-    mgrad.addColorStop(0.5, '#8f9c78');
-    mgrad.addColorStop(1, '#6b7d5c');
-    ctx.fillStyle = mgrad;
-    ctx.fillRect(mapBoxX, mapBoxY, mapBoxSize, mapBoxSize);
-  }
-
-  // efek "spread" biru khas GPS di bawah pin
-  const pinTipX = mapBoxX + mapBoxSize*0.5;
-  const pinTipY = mapBoxY + mapBoxSize*0.60;
-  ctx.beginPath();
-  ctx.ellipse(pinTipX, pinTipY + mapBoxSize*0.05, mapBoxSize*0.3, mapBoxSize*0.15, 0, 0, Math.PI*2);
-  ctx.fillStyle = 'rgba(70,130,255,0.4)';
-  ctx.fill();
-  ctx.restore();
-
-  // pin merah bergaya Google Maps
-  drawMapPin(ctx, pinTipX, pinTipY, mapBoxSize*0.55, '#ff3b30');
-
-  // kolom teks di kanan
-  const textX = mapBoxX + mapBoxSize + mapBoxGap;
-  let textY = panelY + innerPad + Math.max(0, (panelHeight - innerPad*2 - textBlockHeight)/2);
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  textLines.forEach(l => {
-    ctx.font = l.font;
-    ctx.fillStyle = l.color;
-    ctx.fillText(l.text, textX, textY);
-    textY += l.size * lineSpacing;
+  // Stempel digambar oleh mesin yang SAMA dengan video, jadi foto dan video
+  // dari satu lokasi kelihatan satu gaya.
+  drawGeoStamp(ctx, W, H, {
+    title: businessName || deriveRegionTitle(address) || catText,
+    address: address || catText,
+    note: entry.note || '',
+    lat: entry.lat, lng: entry.lng,
+    timestamp: entry.timestamp,
+    mapCrop,
+    badge: 'Geo Foto Lapangan'
   });
 
-  // Stempel dibuat pada kanvas berukuran sama dengan foto sumber dan hanya
-  // memakai satu kali encoding JPEG dengan kualitas tinggi agar detail wajah,
-  // tulisan, dan tekstur bangunan tetap tajam saat dibagikan.
+  // Satu kali encoding JPEG kualitas tinggi agar detail wajah, tulisan, dan
+  // tekstur bangunan tetap tajam saat dibagikan.
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.98));
 }
 
@@ -2465,8 +2588,24 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnCloseLiveRecord').addEventListener('click', closeLiveRecordModal);
   document.getElementById('btnStartLiveRecord').addEventListener('click', startLiveRecording);
   document.getElementById('btnStopLiveRecord').addEventListener('click', stopLiveRecording);
-  document.getElementById('btnOrientPortrait').addEventListener('click', () => setLiveOrientMode('portrait'));
-  document.getElementById('btnOrientLandscape').addEventListener('click', () => setLiveOrientMode('landscape'));
+  document.querySelectorAll('.live-orient-toggle button[data-orient]').forEach(btn => {
+    btn.addEventListener('click', () => setLiveOrientMode(btn.dataset.orient));
+  });
+  document.querySelectorAll('.stamp-mode-toggle button[data-stamp]').forEach(btn => {
+    btn.addEventListener('click', () => setStampMode(btn.dataset.stamp));
+  });
+  setStampMode(stampMode);
+  setLiveOrientMode(liveOrientMode);
+  // Saat HP diputar, bingkai pratinjau langsung disesuaikan (kalau sedang
+  // mode Otomatis dan tidak sedang merekam).
+  const onOrientChange = () => {
+    if(liveOrientLocked) return;
+    const v = document.getElementById('liveCameraPreview'), c = document.getElementById('liveStampCanvas');
+    if(v && c && liveStream) syncLiveOutputCanvas(v, c);
+  };
+  window.addEventListener('orientationchange', onOrientChange);
+  window.addEventListener('resize', onOrientChange);
+  if(screen.orientation && screen.orientation.addEventListener) screen.orientation.addEventListener('change', onOrientChange);
   document.getElementById('btnImportVideo').addEventListener('click', () => document.getElementById('inputImportVideo').click());
   document.getElementById('btnImport').addEventListener('click', () => document.getElementById('inputImport').click());
 
