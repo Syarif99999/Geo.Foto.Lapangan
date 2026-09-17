@@ -1325,7 +1325,32 @@ function stoppedAfterVideo(video, recorder, startedAt){
   });
 }
 
+// Jaring pengaman kedua: sekali proses simpan sedang berjalan, panggilan
+// berikutnya diabaikan. Proses simpan bisa makan beberapa detik (stempel
+// foto/video), dan selama itu tombol masih bisa tersentuh dua kali —
+// dulu itu menghasilkan dua entri dengan jam yang sama persis.
+let savingDraft = false;
 async function saveDraftAndAdvance(data){
+  if(savingDraft) return;
+  if(!currentDraft || currentDraft.lat == null || currentDraft.lng == null){
+    showToast('Tandai lokasi terlebih dahulu di peta.');
+    return;
+  }
+  savingDraft = true;
+  const btnSave = document.getElementById('btnSaveQ');
+  const btnSaveAll = document.getElementById('btnSaveAllQ');
+  if(btnSave) btnSave.disabled = true;
+  if(btnSaveAll) btnSaveAll.disabled = true;
+  try{
+    await doSaveDraftAndAdvance(data);
+  } finally {
+    savingDraft = false;
+    if(btnSave) btnSave.disabled = false;
+    if(btnSaveAll) btnSaveAll.disabled = false;
+  }
+}
+
+async function doSaveDraftAndAdvance(data){
   if(!currentDraft || currentDraft.lat == null || currentDraft.lng == null){
     showToast('Tandai lokasi terlebih dahulu di peta.');
     return;
@@ -1361,13 +1386,19 @@ async function saveDraftAndAdvance(data){
     geocodePending: !currentDraft.addressAuto
   };
   const localId = await addEntry(entry);
+  // PENTING: nomor dokumen cloud diklaim dan ditulis ke entri lokal SEBELUM
+  // diunggah. Dulu urutannya: simpan lokal → unggah → baru catat cloudDocId.
+  // Di sela itu, listener sinkron real-time sudah menerima dokumen baru dari
+  // Firestore, mencari entri lokal ber-cloudDocId sama, TIDAK ketemu (karena
+  // belum sempat dicatat), lalu menyimpulkan "ini entri baru dari HP lain"
+  // dan membuat SALINAN KEDUA. Itulah asal foto/video yang tersimpan dobel.
+  const cloudDocId = makeCloudDocId(localId);
+  await updateEntry(localId, { cloudDocId });
   showToast(`${entry.mediaType === 'video' ? 'Video' : 'Foto'} tersimpan ✅`);
   lastSavedEntryId = localId;
   document.getElementById('lastSavedBar').style.display = 'flex';
-  const cloudDocId = makeCloudDocId(localId);
   const synced = await syncEntryToCloud(cloudDocId, entry);
-  const changes = { cloudSynced: synced };
-  if(synced) changes.cloudDocId = cloudDocId;
+  const changes = { cloudSynced: synced, cloudDocId };
   await updateEntry(localId, changes);
   qIndex++;
   processQueueItem();
@@ -1536,6 +1567,9 @@ async function retryPendingCloudSync(){
     for(const en of pending){
       if(!navigator.onLine) break;
       const docId = getStableCloudDocId(en);
+      // Catat dulu nomor dokumennya di entri lokal, baru diunggah — supaya
+      // listener sinkron tidak keburu menganggapnya data asing lalu menyalin.
+      if(en.cloudDocId !== docId) await updateEntry(en.id, { cloudDocId: docId });
       const success = await syncEntryToCloud(docId, en);
       if(success){ await updateEntry(en.id, { cloudSynced:true, cloudDocId:docId }); ok++; }
     }
@@ -1577,6 +1611,9 @@ async function forceResyncAll(){
       // sini membuat Firestore menyimpan dokumen lama dan dokumen baru,
       // sehingga satu foto tampak dua kali setelah sinkron ulang.
       const docId = getStableCloudDocId(en);
+      // Catat dulu nomor dokumennya di entri lokal, baru diunggah — supaya
+      // listener sinkron tidak keburu menganggapnya data asing lalu menyalin.
+      if(en.cloudDocId !== docId) await updateEntry(en.id, { cloudDocId: docId });
       const success = await syncEntryToCloud(docId, en);
       if(success){ await updateEntry(en.id, { cloudSynced:true, cloudDocId:docId }); ok++; }
       else fail++;
@@ -1662,6 +1699,25 @@ function dataURLToBlob(dataUrl){
    ========================================================================== */
 let categoryCloudUnsub = null;
 
+// Mencari entri LOKAL yang sebenarnya adalah data yang sama dengan dokumen
+// cloud ini, tapi kebetulan belum punya cloudDocId (mis. karena unggahannya
+// sempat gagal, atau tersimpan oleh versi aplikasi lama). Dipakai supaya
+// dokumen cloud "diakui" oleh entri yang sudah ada — bukan malah ditambahkan
+// sebagai entri baru yang jadi kembaran.
+function findLocalTwinForCloudDoc(localList, d, skipIds){
+  const ts = d.timestamp || 0;
+  const tipe = d.mediaType === 'video' ? 'video' : 'photo';
+  return localList.find(e =>
+    !e.cloudDocId &&
+    e.deleted !== true &&
+    !skipIds.has(e.id) &&
+    ((e.mediaType || 'photo') === tipe) &&
+    Math.abs((e.timestamp || 0) - ts) < 120000 &&
+    e.lat != null && e.lng != null && d.lat != null && d.lng != null &&
+    Math.abs(e.lat - d.lat) < 0.0003 && Math.abs(e.lng - d.lng) < 0.0003
+  ) || null;
+}
+
 function startCategoryCloudSync(catId){
   stopCategoryCloudSync();
   if(!firebaseReady){
@@ -1679,6 +1735,8 @@ function startCategoryCloudSync(catId){
             .filter(([cloudId]) => cloudId)
         );
         const cloudIds = new Set(snapshot.docs.map(doc => doc.id));
+        const localList = allLocal.filter(e => e.category === catId);
+        const adopted = new Set();
         let added = 0, updated = 0, removed = 0;
         for(const doc of snapshot.docs){
           const d = doc.data();
@@ -1686,6 +1744,19 @@ function startCategoryCloudSync(catId){
           try{ blob = dataURLToBlob(d.thumbDataUrl); }catch(e){ continue; }
           const mediaType = d.mediaType === 'video' ? 'video' : 'photo';
           const local = localByCloudId.get(doc.id);
+          if(!local){
+            // Sebelum memutuskan "ini entri baru dari HP lain", cek dulu apakah
+            // datanya sebenarnya sudah ada di HP ini. Kalau ya, cukup tautkan
+            // nomor dokumen cloudnya — JANGAN buat entri kedua. Foto/video asli
+            // resolusi penuh milik entri lokal tetap dipertahankan.
+            const twin = findLocalTwinForCloudDoc(localList, d, adopted);
+            if(twin){
+              adopted.add(twin.id);
+              await updateEntry(twin.id, { cloudSynced:true, cloudDocId: doc.id });
+              updated++;
+              continue;
+            }
+          }
           if(local){
             // Data yang sedang berada di Sampah jangan dihidupkan kembali oleh
             // listener; cukup pertahankan status sampah lokalnya.
@@ -1741,6 +1812,63 @@ function startCategoryCloudSync(catId){
     });
 }
 
+/* ==========================================================================
+   BERSIHKAN DATA DOBEL YANG SUDAH TERLANJUR ADA
+   Perbaikan di atas mencegah kembaran BARU. Yang sudah terlanjur tersimpan
+   dobel di HP dibereskan lewat tombol ini: dari tiap pasangan kembar, yang
+   DISIMPAN adalah yang memegang file asli (foto/video resolusi penuh), dan
+   yang tinggal thumbnail dari cloud dipindahkan ke Sampah — masih bisa
+   dipulihkan 30 hari kalau ternyata salah. Nomor dokumen cloud dipindahkan
+   ke entri yang disimpan supaya tidak ditarik ulang jadi dobel lagi.
+   ========================================================================== */
+function nilaiKelengkapan(en){
+  let n = 0;
+  if(en.mediaType === 'video' ? en.videoBlob : en.photoBlob) n += 4; // punya file asli
+  if(!en.cloudThumbOnly) n += 2;
+  if(en.businessName) n += 1;
+  return n;
+}
+async function cleanupDuplicates(){
+  const all = await getAllEntries();
+  const aktif = all.filter(e => e.category === currentCategory && e.deleted !== true);
+  const grup = new Map();
+  aktif.forEach(en => {
+    const kunci = [
+      en.mediaType || 'photo',
+      en.lat != null ? en.lat.toFixed(4) : '-',
+      en.lng != null ? en.lng.toFixed(4) : '-',
+      Math.round((en.timestamp || 0) / 120000)   // dibulatkan per 2 menit
+    ].join('|');
+    if(!grup.has(kunci)) grup.set(kunci, []);
+    grup.get(kunci).push(en);
+  });
+
+  const kembar = [...grup.values()].filter(g => g.length > 1);
+  const totalBuang = kembar.reduce((n, g) => n + g.length - 1, 0);
+  if(totalBuang === 0){ showToast('Tidak ada data dobel di kategori ini. 👍'); return; }
+  if(!confirm(`Ditemukan ${totalBuang} data dobel di kategori ini.\n\nYang dipertahankan adalah yang menyimpan foto/video ASLI; salinannya dipindahkan ke Sampah (masih bisa dipulihkan 30 hari). Lanjutkan?`)) return;
+
+  let dibuang = 0;
+  for(const g of kembar){
+    g.sort((a, b) => nilaiKelengkapan(b) - nilaiKelengkapan(a) || a.id - b.id);
+    const simpan = g[0];
+    let cloudIdUntukDisimpan = simpan.cloudDocId || null;
+    for(const dup of g.slice(1)){
+      if(!cloudIdUntukDisimpan && dup.cloudDocId) cloudIdUntukDisimpan = dup.cloudDocId;
+      // cloudDocId dilepas dari salinan supaya dokumen cloudnya tidak dianggap
+      // "hilang" lalu ditarik ulang sebagai entri baru.
+      await updateEntry(dup.id, { deleted:true, deletedAt: Date.now(), cloudDocId:null, cloudSynced:false });
+      dibuang++;
+    }
+    if(cloudIdUntukDisimpan && cloudIdUntukDisimpan !== simpan.cloudDocId){
+      await updateEntry(simpan.id, { cloudDocId: cloudIdUntukDisimpan, cloudSynced:true });
+    }
+  }
+  showToast(`🧹 ${dibuang} data dobel dipindahkan ke Sampah.`);
+  renderList();
+  refreshMenuBadge(currentCategory);
+}
+
 function stopCategoryCloudSync(){
   if(categoryCloudUnsub){ categoryCloudUnsub(); categoryCloudUnsub = null; }
 }
@@ -1764,10 +1892,20 @@ async function restoreFromCloud(){
     const localEntries = allLocal.filter(e => e.category === currentCategory);
     const existingCloudIds = new Set(localEntries.map(e => e.cloudDocId || (e.cloudSynced === true ? String(e.id) : '')).filter(Boolean));
 
-    let restored = 0;
+    let restored = 0, ditautkan = 0;
+    const adopted = new Set();
     for(const doc of snapshot.docs){
       if(existingCloudIds.has(doc.id)) continue; // sudah ada di HP ini
       const d = doc.data();
+      const twin = findLocalTwinForCloudDoc(localEntries, d, adopted);
+      if(twin){
+        // Data ini sebenarnya sudah ada di HP, cuma belum bertaut ke cloud.
+        // Tautkan saja — jangan tambah entri kedua.
+        adopted.add(twin.id);
+        await updateEntry(twin.id, { cloudSynced:true, cloudDocId: doc.id });
+        ditautkan++;
+        continue;
+      }
       let blob;
       try{ blob = dataURLToBlob(d.thumbDataUrl); }catch(e){ continue; }
 
@@ -1800,8 +1938,11 @@ async function restoreFromCloud(){
       restored++;
     }
 
-    if(restored > 0){
-      showToast(`🔄 ${restored} data berhasil dipulihkan dari cloud.`);
+    if(restored > 0 || ditautkan > 0){
+      const pesan = [];
+      if(restored > 0) pesan.push(`${restored} data dipulihkan dari cloud`);
+      if(ditautkan > 0) pesan.push(`${ditautkan} data yang sudah ada ditautkan ulang (tidak digandakan)`);
+      showToast('🔄 ' + pesan.join(', ') + '.');
       renderList();
       refreshMenuBadge(currentCategory);
     } else {
@@ -2077,6 +2218,8 @@ function toggleTrashView(){
   document.getElementById('btnTrashSelect').textContent = '☑️ Tandai Data';
   document.getElementById('btnEmptyTrash').style.display = viewingTrash ? 'inline-block' : 'none';
   document.getElementById('btnRestoreCloud').style.display = viewingTrash ? 'none' : 'inline-block';
+  const btnClean = document.getElementById('btnCleanDupes');
+  if(btnClean) btnClean.style.display = viewingTrash ? 'none' : 'inline-block';
   const btnForceSyncEl = document.getElementById('btnForceSync');
   if(btnForceSyncEl) btnForceSyncEl.style.display = viewingTrash ? 'none' : 'inline-block';
   document.getElementById('btnExportExcel').style.display = viewingTrash ? 'none' : 'inline-block';
@@ -2539,6 +2682,7 @@ function goToCategory(catId){
   document.getElementById('btnEmptyTrash').style.display = 'none';
   document.getElementById('btnBatchMode').style.display = 'inline-block';
   document.getElementById('btnRestoreCloud').style.display = 'inline-block';
+  { const b = document.getElementById('btnCleanDupes'); if(b) b.style.display = 'inline-block'; }
   const btnForceSyncEl2 = document.getElementById('btnForceSync');
   if(btnForceSyncEl2) btnForceSyncEl2.style.display = 'inline-block';
   document.getElementById('btnExportExcel').style.display = 'inline-block';
@@ -2621,6 +2765,7 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('inputImportVideo').addEventListener('change', (e) => { if(e.target.files.length) startQueue(e.target.files, 'import'); e.target.value=''; });
 
   document.getElementById('btnLocateNow').addEventListener('click', onLocateNowClick);
+  document.getElementById('btnCleanDupes').addEventListener('click', cleanupDuplicates);
   document.getElementById('btnSaveQ').addEventListener('click', onSaveDraft);
   document.getElementById('btnSaveAllQ').addEventListener('click', onSaveAllDrafts);
   document.getElementById('btnSkipQ').addEventListener('click', onSkipDraft);
