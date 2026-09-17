@@ -762,9 +762,64 @@ function readDraftLocationData(){
 
 let liveStream = null, liveRecorder = null, liveChunks = [], liveWatchId = null, liveGpsPollTimer = null;
 let liveGps = null, liveDrawFrame = null, liveRecordingStartedAt = 0, liveMapCrop = null, liveMapKey = '', liveAddress = '';
+// Mode orientasi video dipilih MANUAL oleh pengguna (tombol Potret/Lanskap),
+// bukan dideteksi otomatis dari sensor/OS. Ini sengaja: pengaturan rotasi
+// otomatis Android, kuncian orientasi PWA, dan perilaku getUserMedia yang
+// berbeda-beda antar perangkat membuat deteksi otomatis tidak bisa
+// diandalkan — banyak HP tetap mengirim frame kamera berbentuk potret
+// walau HP diputar fisik ke lanskap. Dengan pilihan manual, hasil rekaman
+// dijamin sesuai keinginan pengguna, apa pun pengaturan perangkatnya.
+let liveOrientMode = 'portrait';
 
 function setLiveGpsStatus(text){
   const el = document.getElementById('liveGpsStatus'); if(el) el.textContent = text;
+}
+// Rotasi ditentukan dari PILIHAN MANUAL pengguna (tombol Potret/Lanskap)
+// dibandingkan dengan bentuk asli frame kamera (videoWidth vs videoHeight)
+// — bukan dari screen.orientation/rotasi fisik HP, yang tidak bisa
+// diandalkan (lihat catatan pada deklarasi liveOrientMode di atas).
+function getLiveRotation(video){
+  const sourceW = video.videoWidth || (liveOrientMode === 'landscape' ? 1280 : 720);
+  const sourceH = video.videoHeight || (liveOrientMode === 'landscape' ? 720 : 1280);
+  const sourceIsLandscape = sourceW >= sourceH;
+  const wantLandscape = liveOrientMode === 'landscape';
+  if(wantLandscape && !sourceIsLandscape) return 90;
+  if(!wantLandscape && sourceIsLandscape) return -90;
+  return 0;
+}
+function syncLiveOutputCanvas(video, canvas){
+  const sourceW = video.videoWidth || (liveOrientMode === 'landscape' ? 1280 : 720);
+  const sourceH = video.videoHeight || (liveOrientMode === 'landscape' ? 720 : 1280);
+  const rotation = getLiveRotation(video);
+  const outW = rotation ? sourceH : sourceW;
+  const outH = rotation ? sourceW : sourceH;
+  if(canvas.width !== outW || canvas.height !== outH){
+    canvas.width = outW; canvas.height = outH;
+  }
+  return rotation;
+}
+function setLiveOrientMode(mode){
+  liveOrientMode = mode === 'landscape' ? 'landscape' : 'portrait';
+  const btnP = document.getElementById('btnOrientPortrait');
+  const btnL = document.getElementById('btnOrientLandscape');
+  if(btnP) btnP.classList.toggle('active', liveOrientMode === 'portrait');
+  if(btnL) btnL.classList.toggle('active', liveOrientMode === 'landscape');
+  const video = document.getElementById('liveCameraPreview'), canvas = document.getElementById('liveStampCanvas');
+  if(video && canvas) syncLiveOutputCanvas(video, canvas);
+}
+// Loop penggambaran berjalan SEJAK modal dibuka (bukan cuma saat merekam),
+// supaya pengguna langsung melihat pratinjau stempel + orientasi yang
+// dipilih sebelum menekan "Mulai Rekam" — persis seperti alur foto.
+function startLivePreviewLoop(){
+  const video = document.getElementById('liveCameraPreview'), canvas = document.getElementById('liveStampCanvas');
+  const ctx = canvas.getContext('2d');
+  const loop = () => {
+    if(!liveStream){ liveDrawFrame = null; return; }
+    const rotation = syncLiveOutputCanvas(video, canvas);
+    drawLiveStamp(ctx, canvas, video, rotation);
+    liveDrawFrame = requestAnimationFrame(loop);
+  };
+  loop();
 }
 function closeLiveRecordModal(){
   if(liveRecorder && liveRecorder.state !== 'inactive') liveRecorder.stop();
@@ -781,6 +836,7 @@ function closeLiveRecordModal(){
   const modal = document.getElementById('liveRecordModal'); if(modal) modal.classList.remove('show');
   document.getElementById('btnStartLiveRecord').style.display = '';
   document.getElementById('btnStopLiveRecord').style.display = 'none';
+  const toggle = document.getElementById('liveOrientToggle'); if(toggle) toggle.classList.remove('disabled');
 }
 async function openLiveRecordModal(){
   const fallbackToDeviceCamera = () => {
@@ -795,11 +851,13 @@ async function openLiveRecordModal(){
   const modal = document.getElementById('liveRecordModal');
   const video = document.getElementById('liveCameraPreview');
   modal.classList.add('show');
+  setLiveOrientMode('portrait');
   setLiveGpsStatus('Meminta izin kamera dan GPS...');
   try{
     liveStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:true });
     video.srcObject = liveStream;
     await video.play();
+    startLivePreviewLoop();
     if(navigator.geolocation){
       const updateLiveGps = () => {
         navigator.geolocation.getCurrentPosition(pos => {
@@ -906,30 +964,10 @@ async function startLiveRecording(){
     setTimeout(() => document.getElementById('inputVideo').click(), 120);
     return;
   }
-  const video=document.getElementById('liveCameraPreview'), canvas=document.getElementById('liveStampCanvas');
-  const ctx=canvas.getContext('2d');
-  // CATATAN PENTING: manifest.json PWA ini mengunci "orientation":
-  // "portrait-primary", sehingga screen.orientation.type TIDAK PERNAH
-  // berubah ke "landscape" walaupun HP diputar secara fisik saat dipasang
-  // sebagai aplikasi (standalone). Logika lama membandingkan
-  // screen.orientation.type dengan videoWidth/videoHeight untuk menebak
-  // apakah perlu rotasi manual 90°/-90° — akibatnya video lanskap yang
-  // SUDAH benar orientasinya justru dipaksa dirotasi, sehingga bingkai
-  // dan stempel jadi tidak tampil/terlihat rusak saat merekam lanskap.
-  // Perbaikan: video dari kamera (facingMode environment) pada browser
-  // mobile modern SUDAH otomatis mengikuti orientasi fisik perangkat —
-  // videoWidth/videoHeight sudah benar tanpa perlu rotasi manual apa pun.
-  // Jadi kanvas cukup mengikuti ukuran asli video, tanpa rotasi.
-  const getRotation = () => 0;
-  const syncOutputCanvas = () => {
-    const outW = video.videoWidth || 1280;
-    const outH = video.videoHeight || 720;
-    if(canvas.width !== outW || canvas.height !== outH){
-      canvas.width = outW; canvas.height = outH;
-    }
-    return 0;
-  };
-  syncOutputCanvas();
+  const canvas=document.getElementById('liveStampCanvas');
+  // Kanvas ini sudah aktif digambar oleh startLivePreviewLoop() sejak modal
+  // dibuka, jadi rekaman tinggal menangkap stream dari kanvas yang sama —
+  // apa yang terlihat di pratinjau itulah yang terekam.
   const composite=canvas.captureStream(30);
   liveStream.getAudioTracks().forEach(t=>composite.addTrack(t));
   // Utamakan MP4 kalau perangkat/browser mendukungnya. WhatsApp (dan
@@ -948,18 +986,10 @@ async function startLiveRecording(){
   };
   liveRecordingStartedAt=Date.now(); liveRecorder.start(250);
   document.getElementById('btnStartLiveRecord').style.display='none'; document.getElementById('btnStopLiveRecord').style.display='';
-  // Sinkronkan ukuran canvas setiap frame. Pada HP, videoWidth/videoHeight
-  // dapat berubah saat pengguna memutar perangkat ke lanskap atau potret.
-  const loop=()=>{
-    if(liveRecorder && liveRecorder.state==='recording'){
-      const rotation = syncOutputCanvas();
-      drawLiveStamp(ctx,canvas,video,rotation);
-      liveDrawFrame=requestAnimationFrame(loop);
-    }
-  };
-  window.addEventListener('orientationchange', syncOutputCanvas, { passive:true });
-  window.addEventListener('resize', syncOutputCanvas, { passive:true });
-  loop();
+  // Kunci pilihan orientasi begitu rekaman dimulai, supaya tidak berubah
+  // di tengah rekaman (tombol dinonaktifkan sampai rekaman berhenti).
+  const toggle = document.getElementById('liveOrientToggle');
+  if(toggle) toggle.classList.add('disabled');
 }
 function stopLiveRecording(){if(liveRecorder && liveRecorder.state==='recording') liveRecorder.stop();}
 
@@ -2396,6 +2426,8 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnCloseLiveRecord').addEventListener('click', closeLiveRecordModal);
   document.getElementById('btnStartLiveRecord').addEventListener('click', startLiveRecording);
   document.getElementById('btnStopLiveRecord').addEventListener('click', stopLiveRecording);
+  document.getElementById('btnOrientPortrait').addEventListener('click', () => setLiveOrientMode('portrait'));
+  document.getElementById('btnOrientLandscape').addEventListener('click', () => setLiveOrientMode('landscape'));
   document.getElementById('btnImportVideo').addEventListener('click', () => document.getElementById('inputImportVideo').click());
   document.getElementById('btnImport').addEventListener('click', () => document.getElementById('inputImport').click());
 
