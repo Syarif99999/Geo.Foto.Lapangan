@@ -886,12 +886,17 @@ function drawLiveStamp(ctx, canvas, video, rotation=0){
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
   ctx.save();
-  if(rotation === 90){
-    ctx.translate(W, 0); ctx.rotate(Math.PI / 2);
-    ctx.drawImage(video, 0, 0, H, W);
-  }else if(rotation === -90){
-    ctx.translate(0, H); ctx.rotate(-Math.PI / 2);
-    ctx.drawImage(video, 0, 0, H, W);
+  if(rotation === 90 || rotation === -90){
+    // Putar video di sekitar TITIK TENGAH kanvas, memakai ukuran asli
+    // video (bukan ukuran kanvas yang sudah ditukar) — cara ini jauh
+    // lebih aman dari salah hitung dibanding translate+rotate manual
+    // yang dipakai sebelumnya, dan selalu pas mengisi kanvas penuh
+    // selama W dan H memang sudah benar (tinggi↔lebar tertukar).
+    const vw = video.videoWidth || H;
+    const vh = video.videoHeight || W;
+    ctx.translate(W / 2, H / 2);
+    ctx.rotate(rotation === 90 ? Math.PI / 2 : -Math.PI / 2);
+    ctx.drawImage(video, -vw / 2, -vh / 2, vw, vh);
   }else{
     ctx.drawImage(video, 0, 0, W, H);
   }
@@ -1256,7 +1261,14 @@ async function syncEntryToCloud(docId, entry){
       address: entry.addressManual || entry.addressAuto || '',
       note: entry.note || '',
       timestamp: entry.timestamp,
-      thumbDataUrl: thumbDataUrl
+      thumbDataUrl: thumbDataUrl,
+      // PENTING: sertakan mediaType supaya "Pulihkan dari Cloud"/"Sinkron
+      // Ulang" di HP lain tahu ini video, bukan foto. Sebelumnya field ini
+      // tidak pernah dikirim, sehingga entri video yang dipulihkan dari
+      // cloud selalu dikira foto — thumbnail placeholder "VIDEO" ikut
+      // tampil seolah itu fotonya, dan tombol Bagikan jadi rusak karena
+      // tidak ada video sungguhan yang bisa dibagikan.
+      mediaType: entry.mediaType || 'photo'
     });
     return true;
   }catch(e){
@@ -1435,6 +1447,7 @@ function startCategoryCloudSync(catId){
           const d = doc.data();
           let blob;
           try{ blob = dataURLToBlob(d.thumbDataUrl); }catch(e){ continue; }
+          const mediaType = d.mediaType === 'video' ? 'video' : 'photo';
           const local = localByCloudId.get(doc.id);
           if(local){
             // Data yang sedang berada di Sampah jangan dihidupkan kembali oleh
@@ -1449,12 +1462,20 @@ function startCategoryCloudSync(catId){
             });
             updated++;
           } else {
+            // Entri BARU dari rekan kerja lain: cloud cuma menyimpan
+            // thumbnail, bukan video aslinya. Tandai mediaType dan kosongkan
+            // videoBlob secara eksplisit supaya daftar & tombol Bagikan tahu
+            // ini video tanpa file asli — bukan malah dikira foto biasa
+            // (dulu ini yang bikin placeholder "VIDEO" tampil seolah foto).
             await addEntry({
               category: d.category || catId, businessName: d.businessName || '',
               lat: d.lat, lng: d.lng, coordSource: 'Disinkron otomatis dari cloud',
               addressAuto: d.address || '', addressManual: d.address || '',
               note: d.note || '', timestamp: d.timestamp || Date.now(),
-              photoBlob: blob, thumbBlob: blob, fileName: `cloud_${doc.id}.jpg`,
+              mediaType,
+              photoBlob: mediaType === 'video' ? null : blob, thumbBlob: blob,
+              videoBlob: null, cloudThumbOnly: true,
+              fileName: `cloud_${doc.id}.jpg`,
               cloudSynced: true, cloudDocId: doc.id
             });
             added++;
@@ -1513,6 +1534,7 @@ async function restoreFromCloud(){
       let blob;
       try{ blob = dataURLToBlob(d.thumbDataUrl); }catch(e){ continue; }
 
+      const mediaType = d.mediaType === 'video' ? 'video' : 'photo';
       const entry = {
         category: d.category || currentCategory,
         businessName: d.businessName || '',
@@ -1522,9 +1544,18 @@ async function restoreFromCloud(){
         addressManual: d.address || '',
         note: d.note || '',
         timestamp: d.timestamp || Date.now(),
-        photoBlob: blob,
+        mediaType,
+        // Yang tersimpan di cloud CUMA thumbnail (video asli tidak pernah
+        // diunggah — ukurannya kebesaran untuk Firestore). Untuk entri
+        // video, tandai videoBlob KOSONG secara eksplisit (bukan diisi
+        // gambar placeholder) supaya tombol Bagikan tahu video sungguhan
+        // tidak tersedia di HP ini, alih-alih diam-diam membagikan gambar
+        // placeholder "VIDEO" seolah itu videonya.
+        photoBlob: mediaType === 'video' ? null : blob,
         thumbBlob: blob,
-        fileName: `cloud_${doc.id}.jpg`,
+        videoBlob: null,
+        cloudThumbOnly: true,
+        fileName: `cloud_${doc.id}.${mediaType === 'video' ? 'jpg' : 'jpg'}`,
         cloudSynced: true,
         cloudDocId: doc.id
       };
@@ -1836,6 +1867,14 @@ async function shareEntry(id, withStamp){
   if(withStamp === undefined) withStamp = true;
   const entry = await getEntry(id);
   if(!entry){ showToast('Data tidak ditemukan.'); return; }
+  // Entri video hasil "Pulihkan dari Cloud"/"Sinkron Ulang" dari HP lain
+  // cuma membawa THUMBNAIL, bukan file video aslinya (video tidak pernah
+  // diunggah ke cloud — ukurannya kebesaran). Kalau dipaksa dibagikan,
+  // hasilnya rusak/kosong. Beri tahu dengan jelas alih-alih diam-diam gagal.
+  if(entry.mediaType === 'video' && !entry.videoBlob){
+    showToast('Video asli tidak tersedia di HP ini (data ini dipulihkan dari cloud, hanya berisi thumbnail). Video lengkap hanya ada di HP yang pertama kali merekamnya.');
+    return;
+  }
   showToast(entry.mediaType === 'video' ? 'Menyiapkan video...' : (withStamp ? 'Menyiapkan foto berkoordinat...' : 'Menyiapkan foto asli...'));
   try{
     const mediaBlob = entry.mediaType === 'video' ? entry.videoBlob : (withStamp ? (entry.stampedPhotoBlob || await generateStampedPhoto(entry)) : entry.photoBlob);
@@ -2510,9 +2549,21 @@ window.addEventListener('online', retryPendingCloudSync);
 setInterval(retryPendingCloudSync, 45000);
 
 /* ============ SERVICE WORKER ============ */
+/* Auto-update paksa: begitu ada versi baru terpasang, langsung muat ulang
+   halaman satu kali secara otomatis. Tanpa ini, HP yang cuma "dibuka
+   lagi dari recent apps" (bukan ditutup total) bisa tetap menjalankan
+   JavaScript LAMA yang masih ada di memori walau file di server sudah
+   baru dan service worker baru sudah aktif — inilah yang selama ini
+   bikin perbaikan terasa "tidak kepakai" di HP. */
 if('serviceWorker' in navigator){
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('sw.js').catch(err => console.error('SW gagal:', err));
+  });
+  let swReloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if(swReloaded) return;
+    swReloaded = true;
+    window.location.reload();
   });
 }
 
