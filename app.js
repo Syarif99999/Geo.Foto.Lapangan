@@ -908,31 +908,36 @@ async function startLiveRecording(){
   }
   const video=document.getElementById('liveCameraPreview'), canvas=document.getElementById('liveStampCanvas');
   const ctx=canvas.getContext('2d');
-  const getRotation = () => {
-    const sourceW = video.videoWidth || 1280;
-    const sourceH = video.videoHeight || 720;
-    const landscapeScreen = (screen.orientation && screen.orientation.type)
-      ? screen.orientation.type.startsWith('landscape')
-      : window.innerWidth > window.innerHeight;
-    if(landscapeScreen && sourceH > sourceW) return 90;
-    if(!landscapeScreen && sourceW > sourceH) return -90;
-    return 0;
-  };
+  // CATATAN PENTING: manifest.json PWA ini mengunci "orientation":
+  // "portrait-primary", sehingga screen.orientation.type TIDAK PERNAH
+  // berubah ke "landscape" walaupun HP diputar secara fisik saat dipasang
+  // sebagai aplikasi (standalone). Logika lama membandingkan
+  // screen.orientation.type dengan videoWidth/videoHeight untuk menebak
+  // apakah perlu rotasi manual 90°/-90° — akibatnya video lanskap yang
+  // SUDAH benar orientasinya justru dipaksa dirotasi, sehingga bingkai
+  // dan stempel jadi tidak tampil/terlihat rusak saat merekam lanskap.
+  // Perbaikan: video dari kamera (facingMode environment) pada browser
+  // mobile modern SUDAH otomatis mengikuti orientasi fisik perangkat —
+  // videoWidth/videoHeight sudah benar tanpa perlu rotasi manual apa pun.
+  // Jadi kanvas cukup mengikuti ukuran asli video, tanpa rotasi.
+  const getRotation = () => 0;
   const syncOutputCanvas = () => {
-    const sourceW = video.videoWidth || 1280;
-    const sourceH = video.videoHeight || 720;
-    const rotation = getRotation();
-    const outW = rotation ? sourceH : sourceW;
-    const outH = rotation ? sourceW : sourceH;
+    const outW = video.videoWidth || 1280;
+    const outH = video.videoHeight || 720;
     if(canvas.width !== outW || canvas.height !== outH){
       canvas.width = outW; canvas.height = outH;
     }
-    return rotation;
+    return 0;
   };
   syncOutputCanvas();
   const composite=canvas.captureStream(30);
   liveStream.getAudioTracks().forEach(t=>composite.addTrack(t));
-  const types=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+  // Utamakan MP4 kalau perangkat/browser mendukungnya. WhatsApp (dan
+  // banyak aplikasi lain) sering GAGAL menampilkan/menerima lampiran
+  // video berformat WebM sebagai video yang bisa diputar — video jadi
+  // "tidak muncul" saat dibagikan. MP4 jauh lebih kompatibel untuk
+  // dibagikan, jadi kita coba dulu sebelum jatuh ke WebM.
+  const types=['video/mp4;codecs=h264,aac','video/mp4;codecs=avc1,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
   const mime=types.find(t=>MediaRecorder.isTypeSupported(t))||'';
   liveChunks=[]; liveRecorder=new MediaRecorder(composite,mime?{mimeType:mime,videoBitsPerSecond:5000000}:undefined);
   liveRecorder.ondataavailable=e=>{if(e.data.size)liveChunks.push(e.data);};
@@ -945,14 +950,6 @@ async function startLiveRecording(){
   document.getElementById('btnStartLiveRecord').style.display='none'; document.getElementById('btnStopLiveRecord').style.display='';
   // Sinkronkan ukuran canvas setiap frame. Pada HP, videoWidth/videoHeight
   // dapat berubah saat pengguna memutar perangkat ke lanskap atau potret.
-  const syncLiveCanvasSize = () => {
-    const frameW = video.videoWidth || 1280;
-    const frameH = video.videoHeight || 720;
-    if(canvas.width !== frameW || canvas.height !== frameH){
-      canvas.width = frameW;
-      canvas.height = frameH;
-    }
-  };
   const loop=()=>{
     if(liveRecorder && liveRecorder.state==='recording'){
       const rotation = syncOutputCanvas();
@@ -989,7 +986,9 @@ async function generateStampedVideo(entry){
   let sourceStream = null;
   try { sourceStream = video.captureStream ? video.captureStream() : null; } catch(e) {}
   if(sourceStream) sourceStream.getAudioTracks().forEach(track => stream.addTrack(track));
-  const preferred = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+  // Sama seperti rekaman live: utamakan MP4 agar hasil video kompatibel
+  // saat dibagikan lewat WhatsApp (WebM sering tidak tampil sebagai video).
+  const preferred = ['video/mp4;codecs=h264,aac','video/mp4;codecs=avc1,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
   const mimeType = preferred.find(type => MediaRecorder.isTypeSupported(type)) || '';
   const recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 5000000 } : undefined);
   const chunks = [];
