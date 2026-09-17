@@ -776,14 +776,60 @@ let liveOrientMode = 'auto';
 let liveOrientLocked = null;   // dikunci saat merekam supaya ukuran kanvas tidak berubah di tengah rekaman
 let liveStampInfoTick = 0;
 
+/* Deteksi posisi HP.
+   Masalah lama: hanya membaca screen.orientation. Kalau ROTASI OTOMATIS di
+   HP dimatikan (banyak petugas lapangan mematikannya), screen.orientation
+   tetap melaporkan "portrait" walau HP sudah dimiringkan — jadi bingkai
+   video tidak pernah ikut mendatar. Aplikasi sejenis (GPS Map Camera) tidak
+   terpengaruh karena membaca SENSOR KEMIRINGAN, bukan status layar.
+   Sekarang kita pakai keduanya: layar dulu, sensor sebagai penentu saat
+   layar terkunci potret. */
+let tiltOrient = null;           // hasil sensor kemiringan (null = belum ada)
+let tiltCandidate = null, tiltSince = 0, tiltHandler = null;
+let lastOrientSource = 'layar';
+
+function handleTilt(ev){
+  const g = ev.gamma, b = ev.beta;
+  if(typeof g !== 'number' || typeof b !== 'number') return;
+  let o = null;
+  if(Math.abs(g) >= 40 && Math.abs(b) <= 45) o = 'landscape';
+  else if(Math.abs(g) <= 25) o = 'portrait';
+  else return;                   // 25°–40° zona abu-abu: diabaikan (histeresis)
+  const now = Date.now();
+  if(o !== tiltCandidate){ tiltCandidate = o; tiltSince = now; return; }
+  if(now - tiltSince >= 450) tiltOrient = o;   // harus stabil ~0,5 detik
+}
+async function startTiltWatch(){
+  if(tiltHandler || typeof window.DeviceOrientationEvent === 'undefined') return;
+  try{
+    // iOS butuh izin, dan izin hanya bisa diminta dari sentuhan pengguna —
+    // di sini masih dalam rangkaian klik tombol "Rekam Video".
+    if(typeof DeviceOrientationEvent.requestPermission === 'function'){
+      const izin = await DeviceOrientationEvent.requestPermission();
+      if(izin !== 'granted') return;
+    }
+  }catch(e){ return; }
+  tiltHandler = handleTilt;
+  window.addEventListener('deviceorientation', tiltHandler, true);
+}
+function stopTiltWatch(){
+  if(tiltHandler) window.removeEventListener('deviceorientation', tiltHandler, true);
+  tiltHandler = null; tiltOrient = null; tiltCandidate = null;
+}
+
 function detectDeviceOrientation(){
+  let layar = null;
   try{
     const t = (screen.orientation && screen.orientation.type) || '';
-    if(t) return t.indexOf('landscape') === 0 ? 'landscape' : 'portrait';
+    if(t) layar = t.indexOf('landscape') === 0 ? 'landscape' : 'portrait';
   }catch(e){}
-  if(typeof window.orientation === 'number'){
-    return Math.abs(window.orientation) === 90 ? 'landscape' : 'portrait';
+  if(layar == null && typeof window.orientation === 'number'){
+    layar = Math.abs(window.orientation) === 90 ? 'landscape' : 'portrait';
   }
+  if(layar === 'landscape'){ lastOrientSource = 'layar'; return 'landscape'; }
+  if(tiltOrient){ lastOrientSource = 'sensor'; return tiltOrient; }
+  if(layar){ lastOrientSource = 'layar'; return layar; }
+  lastOrientSource = 'rasio';
   return window.innerWidth >= window.innerHeight ? 'landscape' : 'portrait';
 }
 function effectiveLiveOrient(){
@@ -946,10 +992,15 @@ function drawGeoStamp(ctx, W, H, data, options){
   const credit = data.credit || 'Geo Foto Lapangan · BAPENDA Paser';
 
   // Ukuran huruf sedikit dikecilkan dibanding v42 supaya panel tidak melar.
-  const fsTitle = Math.max(11, Math.round(base * (compact ? 0.025 : 0.029)));
-  const fsBody  = Math.max(9,  Math.round(base * 0.0175));
-  const fsCoord = Math.max(10, Math.round(base * 0.021));
-  const fsSmall = Math.max(8,  Math.round(base * 0.0145));
+  // Khusus LANSKAP hurufnya dinaikkan ~18%: di bingkai mendatar, `base`
+  // memakai sisi pendek (tinggi), sehingga dengan rumus lama tulisan jadi
+  // kekecilan relatif terhadap lebar gambar — itu sebab stempel lanskap
+  // terlihat "kurang jelas".
+  const ts = isLandscape ? 1.18 : 1;
+  const fsTitle = Math.max(11, Math.round(base * (compact ? 0.025 : 0.029) * ts));
+  const fsBody  = Math.max(9,  Math.round(base * 0.0175 * ts));
+  const fsCoord = Math.max(10, Math.round(base * 0.021 * ts));
+  const fsSmall = Math.max(8,  Math.round(base * 0.0145 * ts));
 
   // Batas tinggi panel: jauh lebih ketat dari v42 (dulu 30% untuk semua).
   const maxPanelH = Math.round(H * (compact ? 0.13 : (isLandscape ? 0.20 : 0.24)));
@@ -1164,7 +1215,11 @@ function startLivePreviewLoop(){
     drawLiveStamp(ctx, canvas, video, rotation);
     if((liveStampInfoTick++ % 15) === 0){
       const info = document.getElementById('liveStampInfo');
-      if(info) info.textContent = `${stampStatusText()} · Bingkai: ${effectiveLiveOrient() === 'landscape' ? 'Lanskap' : 'Potret'}`;
+      if(info){
+        const bingkai = effectiveLiveOrient() === 'landscape' ? 'Lanskap' : 'Potret';
+        const sumber = liveOrientLocked ? 'terkunci' : (liveOrientMode === 'auto' ? lastOrientSource : 'manual');
+        info.textContent = `${stampStatusText()} · Bingkai: ${bingkai} (${sumber})`;
+      }
     }
     liveDrawFrame = requestAnimationFrame(loop);
   };
@@ -1179,6 +1234,7 @@ function closeLiveRecordModal(){
   liveMapCrop = null; liveMapKey = ''; liveAddress = '';
   liveOrientLocked = null;
   liveStampLock = null;
+  stopTiltWatch();
   if(liveDrawFrame) cancelAnimationFrame(liveDrawFrame);
   liveDrawFrame = null;
   if(liveStream) liveStream.getTracks().forEach(t => t.stop());
@@ -1204,7 +1260,9 @@ async function openLiveRecordModal(){
   modal.classList.add('show');
   liveOrientLocked = null;
   liveStampLock = null;
+  stopTiltWatch();
   resetStampAutoState();   // mode OTOMATIS mulai dari nol tiap sesi kamera
+  startTiltWatch();        // supaya lanskap tetap terdeteksi walau rotasi HP dikunci
   setLiveOrientMode(liveOrientMode);
   setStampMode(stampMode);
   setLiveGpsStatus('Meminta izin kamera dan GPS...');

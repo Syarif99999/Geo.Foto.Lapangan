@@ -235,14 +235,32 @@
   .stamp-mode-card .stamp-mode-toggle button{color:#4b5a6d;}
   .stamp-mode-card .stamp-mode-toggle button.active{background:var(--navy);color:#ffd98a;}
   .stamp-mode-card .hint{margin:8px 0 0 0;}
-  .live-preview-wrap{position:relative;width:100%;background:#05080d;border-radius:12px;overflow:hidden;line-height:0;}
-  #liveCameraPreview,#liveStampCanvas{display:block;width:100%;height:auto;max-height:70vh;object-fit:contain;}
-  #liveStampCanvas{position:absolute;inset:0;pointer-events:none;}
+  /* SATU LAYAR SAJA: hanya kanvas berstempel yang terlihat. Dulu elemen
+     <video> mentah ikut tampil di belakang kanvas dengan perbandingan sisi
+     yang berbeda, jadi saat lanskap terlihat seperti "dua layar". Video
+     tetap diputar (tidak display:none, karena itu bisa menghentikan
+     pemutaran di sebagian browser) tapi dibuat transparan. */
+  .live-preview-wrap{position:relative;width:100%;display:flex;align-items:center;justify-content:center;background:#05080d;border-radius:12px;overflow:hidden;line-height:0;min-height:120px;}
+  #liveCameraPreview{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none;}
+  #liveStampCanvas{position:relative;display:block;margin:0 auto;width:auto;height:auto;max-width:100%;max-height:68vh;object-fit:contain;pointer-events:none;}
   .live-gps-status{margin:10px 0;color:#b8c5d6;font-size:.72rem;line-height:1.4;min-height:1.4em;}
   .live-record-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;}
   .live-record-actions button{border:0;border-radius:9px;padding:10px 14px;font-weight:800;cursor:pointer;background:#fff;color:#102440;}
   .live-record-actions button:last-child{background:#c8952c;color:#102440;}
   @media(max-width:560px){.live-record-box{padding:10px;border-radius:14px}.live-record-actions button{flex:1;min-width:30%;font-size:.74rem}.live-preview-wrap{max-height:70vh;}}
+  /* HP dipegang mendatar: layar jadi pendek. Kotak dibuat penuh layar dan
+     semua tombol dipadatkan supaya pratinjau tetap muat DALAM SATU LAYAR
+     tanpa perlu digulir. */
+  @media(orientation:landscape) and (max-height:560px){
+    .live-record-modal{padding:0;}
+    .live-record-box{width:100%;max-width:none;max-height:100vh;border-radius:0;border:0;padding:8px 10px;}
+    .live-record-box h3{display:none;}
+    #liveStampCanvas{max-height:66vh;}
+    .live-orient-toggle button,.stamp-mode-toggle button{padding:6px 4px;font-size:.64rem;}
+    .live-gps-status{margin:4px 0;font-size:.64rem;min-height:0;}
+    #liveHintOrient{display:none;}
+    .live-record-actions button{padding:7px 12px;font-size:.72rem;}
+  }
 </style>
 </head>
 <body>
@@ -435,7 +453,7 @@
       <button type="button" data-stamp="elegan">✨ Elegan</button>
     </div>
     <div class="live-gps-status" id="liveStampInfo" style="margin:0 0 6px;">Mode stempel: Otomatis</div>
-    <div class="live-gps-status" style="margin:0 0 8px;">Orientasi "Otomatis" mengikuti posisi HP dan dikunci begitu rekaman dimulai. Kalau rotasi otomatis HP dimatikan, pilih Potret/Lanskap manual.</div>
+    <div class="live-gps-status" id="liveHintOrient" style="margin:0 0 8px;">Orientasi "Otomatis" mengikuti posisi HP dan dikunci begitu rekaman dimulai. Kalau rotasi otomatis HP dimatikan, pilih Potret/Lanskap manual.</div>
     <div class="live-preview-wrap">
       <video id="liveCameraPreview" autoplay muted playsinline></video>
       <canvas id="liveStampCanvas"></canvas>
