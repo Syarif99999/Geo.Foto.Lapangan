@@ -824,10 +824,20 @@ async function openLiveRecordModal(){
     fallbackToDeviceCamera();
   }
 }
-function drawLiveStamp(ctx, canvas, video){
+function drawLiveStamp(ctx, canvas, video, rotation=0){
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
-  ctx.drawImage(video, 0, 0, W, H);
+  ctx.save();
+  if(rotation === 90){
+    ctx.translate(W, 0); ctx.rotate(Math.PI / 2);
+    ctx.drawImage(video, 0, 0, H, W);
+  }else if(rotation === -90){
+    ctx.translate(0, H); ctx.rotate(-Math.PI / 2);
+    ctx.drawImage(video, 0, 0, H, W);
+  }else{
+    ctx.drawImage(video, 0, 0, W, H);
+  }
+  ctx.restore();
 
   // Stempel selalu turun ke bagian bawah frame dan mengikuti ukuran asli
   // kamera. Tidak ada posisi tengah-kiri yang membuat objek lapangan tertutup.
@@ -897,8 +907,30 @@ async function startLiveRecording(){
     return;
   }
   const video=document.getElementById('liveCameraPreview'), canvas=document.getElementById('liveStampCanvas');
-  canvas.width=video.videoWidth||1280; canvas.height=video.videoHeight||720;
-  const ctx=canvas.getContext('2d'), composite=canvas.captureStream(30);
+  const ctx=canvas.getContext('2d');
+  const getRotation = () => {
+    const sourceW = video.videoWidth || 1280;
+    const sourceH = video.videoHeight || 720;
+    const landscapeScreen = (screen.orientation && screen.orientation.type)
+      ? screen.orientation.type.startsWith('landscape')
+      : window.innerWidth > window.innerHeight;
+    if(landscapeScreen && sourceH > sourceW) return 90;
+    if(!landscapeScreen && sourceW > sourceH) return -90;
+    return 0;
+  };
+  const syncOutputCanvas = () => {
+    const sourceW = video.videoWidth || 1280;
+    const sourceH = video.videoHeight || 720;
+    const rotation = getRotation();
+    const outW = rotation ? sourceH : sourceW;
+    const outH = rotation ? sourceW : sourceH;
+    if(canvas.width !== outW || canvas.height !== outH){
+      canvas.width = outW; canvas.height = outH;
+    }
+    return rotation;
+  };
+  syncOutputCanvas();
+  const composite=canvas.captureStream(30);
   liveStream.getAudioTracks().forEach(t=>composite.addTrack(t));
   const types=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
   const mime=types.find(t=>MediaRecorder.isTypeSupported(t))||'';
@@ -923,13 +955,13 @@ async function startLiveRecording(){
   };
   const loop=()=>{
     if(liveRecorder && liveRecorder.state==='recording'){
-      syncLiveCanvasSize();
-      drawLiveStamp(ctx,canvas,video);
+      const rotation = syncOutputCanvas();
+      drawLiveStamp(ctx,canvas,video,rotation);
       liveDrawFrame=requestAnimationFrame(loop);
     }
   };
-  window.addEventListener('orientationchange', syncLiveCanvasSize, { passive:true });
-  window.addEventListener('resize', syncLiveCanvasSize, { passive:true });
+  window.addEventListener('orientationchange', syncOutputCanvas, { passive:true });
+  window.addEventListener('resize', syncOutputCanvas, { passive:true });
   loop();
 }
 function stopLiveRecording(){if(liveRecorder && liveRecorder.state==='recording') liveRecorder.stop();}
@@ -1785,17 +1817,30 @@ async function shareEntry(id, withStamp){
     const file = new File([mediaBlob], fileName, { type:mime });
     let shared = false;
 
-    if(navigator.canShare && navigator.canShare({ files:[file] })){
-      await navigator.share({ files:[file] });
-      shared = true;
-    } else {
+    const downloadMedia = () => {
       const url = URL.createObjectURL(mediaBlob);
       const a = document.createElement('a');
-      a.href = url; a.download = fileName;
+      a.href = url; a.download = fileName; a.rel = 'noopener';
       document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-      showToast('Foto sudah diunduh — lampirkan manual ke WhatsApp.');
-      shared = true;
+      setTimeout(() => URL.revokeObjectURL(url), 8000);
+      showToast(entry.mediaType === 'video'
+        ? 'Video sudah diunduh — lampirkan manual ke WhatsApp.'
+        : 'Foto sudah diunduh — lampirkan manual ke WhatsApp.');
+      return true;
+    };
+    let shareSupported = false;
+    try { shareSupported = !!(navigator.canShare && navigator.canShare({ files:[file] })); } catch(e) {}
+    if(shareSupported){
+      try {
+        await navigator.share({ files:[file], title:'Geo Foto Lapangan' });
+        shared = true;
+      } catch(e) {
+        if(e && e.name === 'AbortError') throw e;
+        console.warn('Web Share file gagal, beralih ke unduhan:', e);
+        shared = downloadMedia();
+      }
+    } else {
+      shared = downloadMedia();
     }
 
     if(shared){
