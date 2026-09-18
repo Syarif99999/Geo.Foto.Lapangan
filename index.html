@@ -226,6 +226,12 @@
   .live-orient-toggle button{flex:1;border:0;border-radius:7px;padding:9px 6px;font-weight:800;font-size:.78rem;cursor:pointer;background:transparent;color:#9fb0c4;}
   .live-orient-toggle button.active{background:#e0b354;color:#102440;}
   .live-orient-toggle.disabled{opacity:.5;pointer-events:none;}
+  .stamp-size-toggle{display:flex;gap:5px;flex-wrap:wrap;background:#0a1420;border-radius:10px;padding:4px;margin-bottom:8px;}
+  .stamp-size-toggle button{flex:1 1 auto;min-width:28%;border:0;border-radius:7px;padding:8px 6px;font-weight:800;font-size:.72rem;cursor:pointer;background:transparent;color:#9fb0c4;}
+  .stamp-size-toggle button.active{background:#e0b354;color:#102440;}
+  .stamp-mode-card .stamp-size-toggle{background:#eef1f6;}
+  .stamp-mode-card .stamp-size-toggle button{color:#4b5a6d;}
+  .stamp-mode-card .stamp-size-toggle button.active{background:var(--navy);color:#ffd98a;}
   .stamp-mode-toggle{display:flex;gap:5px;flex-wrap:wrap;background:#0a1420;border-radius:10px;padding:4px;margin-bottom:8px;}
   .stamp-mode-toggle button{flex:1 1 auto;min-width:22%;border:0;border-radius:7px;padding:8px 6px;font-weight:800;font-size:.72rem;cursor:pointer;background:transparent;color:#9fb0c4;}
   .stamp-mode-toggle button.active{background:#e0b354;color:#102440;}
@@ -256,7 +262,7 @@
     .live-record-box{width:100%;max-width:none;max-height:100vh;border-radius:0;border:0;padding:8px 10px;}
     .live-record-box h3{display:none;}
     #liveStampCanvas{max-height:66vh;}
-    .live-orient-toggle button,.stamp-mode-toggle button{padding:6px 4px;font-size:.64rem;}
+    .live-orient-toggle button,.stamp-mode-toggle button,.stamp-size-toggle button{padding:6px 4px;font-size:.64rem;}
     .live-gps-status{margin:4px 0;font-size:.64rem;min-height:0;}
     #liveHintOrient{display:none;}
     .live-record-actions button{padding:7px 12px;font-size:.72rem;}
@@ -349,6 +355,13 @@
           <button type="button" data-stamp="ringkas">⚡ Ringkas</button>
           <button type="button" data-stamp="elegan">✨ Elegan</button>
         </div>
+        <label style="margin-top:12px;">🔠 Ukuran Tulisan Stempel</label>
+        <div class="stamp-size-toggle">
+          <button type="button" data-stampsize="normal">Normal</button>
+          <button type="button" data-stampsize="besar" class="active">Besar</button>
+          <button type="button" data-stampsize="jumbo">Jumbo</button>
+        </div>
+        <div class="hint">🔠 <b>Besar</b> adalah bawaan, dipilih supaya tulisan tetap terbaca oleh pembaca lanjut usia dan saat foto dilihat kecil di WhatsApp. <b>Jumbo</b> untuk kebutuhan cetak laporan. Panel otomatis menyesuaikan tingginya, dan kalau tetap tidak muat, kredit dan catatan dikorbankan lebih dulu — koordinat dan tanggal tidak pernah dibuang.</div>
         <div class="hint">🤖 <b>Otomatis</b>: aplikasi memilih sendiri — potret/lanskap, lengkap/ringkas, panel gelap atau terang mengikuti terang-gelapnya bagian bawah gambar, supaya tulisan selalu terbaca. Pilihan ini dipakai untuk foto tersimpan maupun rekaman video, dan diingat sampai diganti.</div>
       </div>
 
@@ -451,6 +464,11 @@
       <button type="button" data-stamp="klasik">🗺️ Klasik</button>
       <button type="button" data-stamp="ringkas">⚡ Ringkas</button>
       <button type="button" data-stamp="elegan">✨ Elegan</button>
+    </div>
+    <div class="stamp-size-toggle" id="liveStampSizeToggle">
+      <button type="button" data-stampsize="normal">🔠 Normal</button>
+      <button type="button" data-stampsize="besar" class="active">🔠 Besar</button>
+      <button type="button" data-stampsize="jumbo">🔠 Jumbo</button>
     </div>
     <div class="live-gps-status" id="liveStampInfo" style="margin:0 0 6px;">Mode stempel: Otomatis</div>
     <div class="live-gps-status" id="liveHintOrient" style="margin:0 0 8px;">Orientasi "Otomatis" mengikuti posisi HP dan dikunci begitu rekaman dimulai. Kalau rotasi otomatis HP dimatikan, pilih Potret/Lanskap manual.</div>

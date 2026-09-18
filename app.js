@@ -856,9 +856,16 @@ function effectiveLiveOrient(){
 const STAMP_MODES = ['auto','lengkap','klasik','ringkas','elegan'];
 const STAMP_MODE_LABEL = { auto:'Otomatis', lengkap:'Lengkap', klasik:'Klasik', ringkas:'Ringkas', elegan:'Elegan' };
 let stampMode = 'auto';
+/* Ukuran tulisan stempel. Banyak pengguna lapangan (dan pembaca laporan)
+   sudah berumur, jadi bawaan sekarang BESAR, bukan normal. */
+const STAMP_SCALES = { normal:1, besar:1.28, jumbo:1.6 };
+const STAMP_SCALE_LABEL = { normal:'Normal', besar:'Besar', jumbo:'Jumbo' };
+let stampScale = 'besar';
 try{
   const savedStampMode = localStorage.getItem('geoFotoStampMode');
   if(savedStampMode && STAMP_MODES.indexOf(savedStampMode) >= 0) stampMode = savedStampMode;
+  const savedScale = localStorage.getItem('geoFotoStampScale');
+  if(savedScale && STAMP_SCALES[savedScale]) stampScale = savedScale;
 }catch(e){}
 let lastStampResolution = { template:'lengkap', theme:'gelap' };
 
@@ -950,9 +957,10 @@ function stampStatusText(){
   const r = lastStampResolution;
   const nama = STAMP_MODE_LABEL[r.template] || r.template;
   const kunci = liveStampLock ? ' · dikunci selama rekaman' : '';
+  const ukuran = ` · Huruf: ${STAMP_SCALE_LABEL[stampScale] || stampScale}`;
   return (stampMode === 'auto'
     ? `Mode stempel: Otomatis → ${nama} (${r.theme})`
-    : `Mode stempel: ${STAMP_MODE_LABEL[stampMode] || stampMode}`) + kunci;
+    : `Mode stempel: ${STAMP_MODE_LABEL[stampMode] || stampMode}`) + ukuran + kunci;
 }
 
 // Alamat panjang dari reverse-geocode sering berisi ekor yang tidak berguna
@@ -996,14 +1004,18 @@ function drawGeoStamp(ctx, W, H, data, options){
   // memakai sisi pendek (tinggi), sehingga dengan rumus lama tulisan jadi
   // kekecilan relatif terhadap lebar gambar — itu sebab stempel lanskap
   // terlihat "kurang jelas".
-  const ts = isLandscape ? 1.18 : 1;
-  const fsTitle = Math.max(11, Math.round(base * (compact ? 0.025 : 0.029) * ts));
-  const fsBody  = Math.max(9,  Math.round(base * 0.0175 * ts));
-  const fsCoord = Math.max(10, Math.round(base * 0.021 * ts));
-  const fsSmall = Math.max(8,  Math.round(base * 0.0145 * ts));
+  // Angka dasar dinaikkan ±30% dari v44 (keluhan: tulisan terlalu kecil,
+  // kasihan pembaca lanjut usia), lalu dikalikan setelan Ukuran Tulisan.
+  const ts = (isLandscape ? 1.18 : 1) * (STAMP_SCALES[stampScale] || 1.28);
+  const fsTitle = Math.max(16, Math.round(base * (compact ? 0.032 : 0.038) * ts));
+  const fsBody  = Math.max(14, Math.round(base * 0.024 * ts));
+  const fsCoord = Math.max(16, Math.round(base * 0.030 * ts));
+  const fsSmall = Math.max(12, Math.round(base * 0.020 * ts));
 
   // Batas tinggi panel: jauh lebih ketat dari v42 (dulu 30% untuk semua).
-  const maxPanelH = Math.round(H * (compact ? 0.13 : (isLandscape ? 0.20 : 0.24)));
+  const skala = STAMP_SCALES[stampScale] || 1.28;
+  const ruang = 1 + (skala - 1) * 0.75;   // huruf besar butuh panel sedikit lebih tinggi
+  const maxPanelH = Math.round(H * (compact ? 0.15 : (isLandscape ? 0.24 : 0.28)) * ruang);
 
   let mapSize = showMap ? Math.min(Math.round(base * (isLandscape ? 0.15 : 0.175)), Math.round(H * 0.15)) : 0;
   const fullPanelW = W - margin * 2;
@@ -1166,6 +1178,16 @@ function setStampMode(mode){
   if(info) info.textContent = stampStatusText();
 }
 
+function setStampScale(scale){
+  stampScale = STAMP_SCALES[scale] ? scale : 'besar';
+  try{ localStorage.setItem('geoFotoStampScale', stampScale); }catch(e){}
+  document.querySelectorAll('.stamp-size-toggle button[data-stampsize]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.stampsize === stampScale);
+  });
+  const info = document.getElementById('liveStampInfo');
+  if(info) info.textContent = stampStatusText();
+}
+
 function setLiveGpsStatus(text){
   const el = document.getElementById('liveGpsStatus'); if(el) el.textContent = text;
 }
@@ -1265,6 +1287,7 @@ async function openLiveRecordModal(){
   startTiltWatch();        // supaya lanskap tetap terdeteksi walau rotasi HP dikunci
   setLiveOrientMode(liveOrientMode);
   setStampMode(stampMode);
+  setStampScale(stampScale);
   setLiveGpsStatus('Meminta izin kamera dan GPS...');
   try{
     liveStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:true });
@@ -2883,7 +2906,11 @@ window.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.stamp-mode-toggle button[data-stamp]').forEach(btn => {
     btn.addEventListener('click', () => setStampMode(btn.dataset.stamp));
   });
+  document.querySelectorAll('.stamp-size-toggle button[data-stampsize]').forEach(btn => {
+    btn.addEventListener('click', () => setStampScale(btn.dataset.stampsize));
+  });
   setStampMode(stampMode);
+  setStampScale(stampScale);
   setLiveOrientMode(liveOrientMode);
   // Saat HP diputar, bingkai pratinjau langsung disesuaikan (kalau sedang
   // mode Otomatis dan tidak sedang merekam).
