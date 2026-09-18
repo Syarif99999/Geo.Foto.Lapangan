@@ -1248,6 +1248,9 @@ function startLivePreviewLoop(){
   loop();
 }
 function closeLiveRecordModal(){
+  bfClose('liveRecordModal');
+}
+function _viewCloseLiveRecordModal(){
   if(liveRecorder && liveRecorder.state !== 'inactive') liveRecorder.stop();
   if(liveWatchId != null && navigator.geolocation) navigator.geolocation.clearWatch(liveWatchId);
   liveWatchId = null;
@@ -1280,6 +1283,7 @@ async function openLiveRecordModal(){
   const modal = document.getElementById('liveRecordModal');
   const video = document.getElementById('liveCameraPreview');
   modal.classList.add('show');
+  bfPush('liveRecordModal');
   liveOrientLocked = null;
   liveStampLock = null;
   stopTiltWatch();
@@ -2624,8 +2628,12 @@ async function openPhotoOverlay(id){
   img.style.display = isVideo ? 'none' : 'block'; video.style.display = isVideo ? 'block' : 'none';
   if(isVideo) video.src = photoOverlayUrl; else img.src = photoOverlayUrl;
   document.getElementById('photoOverlay').classList.add('show');
+  bfPush('photoOverlay');
 }
 function closePhotoOverlay(){
+  bfClose('photoOverlay');
+}
+function _viewClosePhotoOverlay(){
   document.getElementById('photoOverlay').classList.remove('show');
   const video = document.getElementById('photoOverlayVideo'); if(video){ video.pause(); video.removeAttribute('src'); video.load(); }
 }
@@ -2640,8 +2648,12 @@ async function openEditOverlay(id){
   document.getElementById('editNote').value = en.note || '';
   initEditMap(en.lat, en.lng, en.businessName);
   document.getElementById('editOverlay').classList.add('show');
+  bfPush('editOverlay');
 }
 function closeEditOverlay(){
+  bfClose('editOverlay');
+}
+function _viewCloseEditOverlay(){
   document.getElementById('editOverlay').classList.remove('show');
   if(editMap){ editMap.remove(); editMap = null; }
   editingId = null;
@@ -2859,9 +2871,15 @@ function goToCategory(catId){
   switchTab('capture');
   window.scrollTo({ top:0, behavior:'smooth' });
   startCategoryCloudSync(catId);
+  bfPush('category');
 }
 
+// Dipanggil dari tombol "⬅ Menu" di UI. Diarahkan lewat riwayat browser
+// supaya tombol back Android tetap sinkron (lihat blok TOMBOL BACK ANDROID).
 function goToMenu(){
+  bfClose('category');
+}
+function _viewGoToMenu(){
   onCancelQueue();
   document.getElementById('viewCategory').style.display = 'none';
   document.getElementById('viewMenu').style.display = 'block';
@@ -2886,10 +2904,66 @@ function switchTab(tab){
 }
 
 /* ==========================================================================
+   TOMBOL BACK ANDROID
+   Supaya tombol back HP tidak langsung menutup aplikasi begitu saja:
+   - Kalau ada overlay/modal terbuka (foto, edit, kamera live) -> tutup itu dulu.
+   - Kalau sedang di dalam kategori -> kembali ke Menu dulu.
+   - Kalau sudah di Menu utama -> back pertama munculkan pesan konfirmasi,
+     back kedua (dalam 2 detik) baru benar-benar keluar aplikasi.
+   ========================================================================== */
+let activeBfLayer = null; // 'category' | 'liveRecordModal' | 'editOverlay' | 'photoOverlay' | null
+
+function bfPush(layerName){
+  activeBfLayer = layerName;
+  history.pushState({ bfLayer: layerName }, '');
+}
+
+// Dipanggil dari tombol tutup/X di UI (bukan dari tombol back HP) supaya
+// riwayat browser tetap sinkron dengan apa yang sedang tampil di layar.
+function bfClose(layerName){
+  if(activeBfLayer === layerName){
+    history.back(); // akan memicu 'popstate' di bawah -> _closeBfLayerView()
+  } else {
+    _closeBfLayerView(layerName); // fallback kalau riwayat sudah tidak sinkron
+  }
+}
+
+function _closeBfLayerView(layerName){
+  if(layerName === 'photoOverlay') _viewClosePhotoOverlay();
+  else if(layerName === 'editOverlay') _viewCloseEditOverlay();
+  else if(layerName === 'liveRecordModal') _viewCloseLiveRecordModal();
+  else if(layerName === 'category') _viewGoToMenu();
+}
+
+let bfExitArm = false, bfExitTimer = null;
+
+window.addEventListener('popstate', (e) => {
+  const closingLayer = activeBfLayer;
+  activeBfLayer = e.state ? e.state.bfLayer : null;
+  if(closingLayer){
+    _closeBfLayerView(closingLayer);
+    return;
+  }
+  // Tidak ada lapisan yang ditutup -> ini di Menu utama, tombol back
+  // berikutnya akan benar-benar keluar dari aplikasi kalau tidak ditahan.
+  if(bfExitArm) return; // biarkan keluar
+  bfExitArm = true;
+  showToast('Tekan sekali lagi untuk keluar aplikasi');
+  history.pushState({ bfLayer: null }, ''); // jaga supaya back berikutnya masih tertangkap
+  clearTimeout(bfExitTimer);
+  bfExitTimer = setTimeout(() => { bfExitArm = false; }, 2000);
+});
+
+/* ==========================================================================
    INIT & EVENT BINDING
    ========================================================================== */
 window.addEventListener('DOMContentLoaded', () => {
  try{
+  // Pasang "penjaga" riwayat browser di layar Menu, supaya tombol back
+  // Android tetap bisa ditangkap (lihat blok TOMBOL BACK ANDROID) walau
+  // belum pernah membuka kategori/overlay apa pun.
+  history.replaceState({ bfLayer: null }, '');
+  history.pushState({ bfLayer: null }, '');
   renderMenu();
   retryPendingGeocodes();
   retryPendingCloudSync();
