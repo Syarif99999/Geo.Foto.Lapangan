@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
-<title>Geo Foto Lapangan - BAPENDA Paser</title>
+<title>Geotag GPS - BAPENDA Paser</title>
 
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0f2647">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Geo Foto">
+<meta name="apple-mobile-web-app-title" content="Geotag GPS">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="icon" href="icon-192.png">
 
@@ -267,6 +267,38 @@
     #liveHintOrient{display:none;}
     .live-record-actions button{padding:7px 12px;font-size:.72rem;}
   }
+
+  /* ===== TIPE PETA & BAGIKAN BANYAK (v47) ===== */
+  #mapTypeOverlay,#shareSheet{z-index:3800;}
+  .maptype-box{width:100%;max-width:460px;border-radius:14px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.4);}
+  .maptype-head{background:#22b04a;color:#fff;display:flex;align-items:center;gap:12px;padding:11px 14px;font-weight:800;font-size:1.05rem;}
+  .maptype-head button{background:none;border:0;color:#fff;font-size:1.5rem;line-height:1;cursor:pointer;padding:0 6px;}
+  .maptype-head span{flex:1;text-align:center;margin-right:32px;}
+  .maptype-body{background:linear-gradient(#3d4d69,#2b3a55);padding:12px 12px 14px;border-bottom:4px solid #2f9bff;}
+  .maptype-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
+  .maptype-card{background:none;border:0;color:#fff;font-weight:700;font-size:.74rem;cursor:pointer;padding:0;text-align:center;}
+  .maptype-card .mt-thumb{display:block;aspect-ratio:1/1;border-radius:9px;border:3px solid rgba(255,255,255,.35);margin-bottom:6px;}
+  .maptype-card.active .mt-thumb{border-color:#ffd166;box-shadow:0 0 0 2px rgba(255,209,102,.35);}
+  .maptype-card.active .mt-label::after{content:' ✓';color:#ffd166;}
+  .mt-normal{background:
+    radial-gradient(circle at 30% 72%,#e91e8c 0 7%,transparent 8%),
+    linear-gradient(115deg,transparent 45%,#fff 45%,#fff 53%,transparent 53%),
+    linear-gradient(20deg,transparent 58%,#fff 58%,#fff 65%,transparent 65%),#e9e5dc;}
+  .mt-satellite{background:
+    radial-gradient(circle at 32% 68%,#6f5d3d 0 16%,transparent 17%),
+    linear-gradient(135deg,#1d3a22,#385430 50%,#122417);}
+  .mt-terrain{background:
+    linear-gradient(120deg,transparent 38%,#7cc4e8 38%,#7cc4e8 45%,transparent 45%),
+    linear-gradient(160deg,#dfecd3,#b7d3a3);}
+  .mt-hybrid{background:
+    radial-gradient(circle at 68% 32%,#ff5a4f 0 9%,transparent 10%),
+    linear-gradient(115deg,transparent 45%,rgba(255,255,255,.85) 45%,rgba(255,255,255,.85) 50%,transparent 50%),
+    linear-gradient(135deg,#3b3a2f,#586148 50%,#2a2f22);}
+  .maptype-body .mt-hint{color:#c9d6ea;font-size:.68rem;margin-top:10px;line-height:1.45;}
+  .tool-btn.maptype-open{margin-top:8px;}
+  .share-part-btn{display:block;width:100%;border:0;border-radius:10px;padding:13px 12px;margin:0 0 8px 0;font-size:.86rem;font-weight:800;cursor:pointer;background:var(--navy);color:#ffd98a;}
+  .share-part-btn.done{background:#e3f1e7;color:var(--green);}
+  #btnBatchSelectAll{background:rgba(255,255,255,.15);color:#fff;}
 </style>
 </head>
 <body>
@@ -296,7 +328,7 @@
 
 <header>
   <span class="badge">BAPENDA Kabupaten Paser</span>
-  <h1>📷 Geo Foto Lapangan</h1>
+  <h1>📷 Geotag GPS</h1>
   <p>Dokumentasi foto lapangan dengan koordinat GPS otomatis</p>
 </header>
 
@@ -361,6 +393,21 @@
           <button type="button" data-stampsize="besar" class="active">Besar</button>
           <button type="button" data-stampsize="jumbo">Jumbo</button>
         </div>
+        <label style="margin-top:12px;">🗺️ Tipe Peta (stempel &amp; peta di aplikasi)</label>
+        <div class="stamp-size-toggle" id="mapTypeQuick">
+          <button type="button" data-maptype="normal" class="active">Normal</button>
+          <button type="button" data-maptype="satellite">Satelit</button>
+          <button type="button" data-maptype="terrain">Terrain</button>
+          <button type="button" data-maptype="hybrid">Hybrid</button>
+        </div>
+        <button type="button" class="tool-btn maptype-open" id="btnOpenMapType">🖼️ Buka pemilih Tipe Peta</button>
+        <label style="margin-top:12px;">📤 Kualitas Foto saat Dibagikan</label>
+        <div class="stamp-size-toggle" id="shareQualityToggle">
+          <button type="button" data-shareq="wa" class="active">WhatsApp</button>
+          <button type="button" data-shareq="seimbang">Seimbang</button>
+          <button type="button" data-shareq="hd">HD Asli</button>
+        </div>
+        <div class="hint">📤 <b>WhatsApp</b> (bawaan, ±1600 px) menyiapkan foto pada ukuran yang pas dengan pengecilan bertahap + penajaman, dan stempel digambar sesudahnya — jadi tulisan tetap tajam walau WhatsApp menekan ulang. <b>Seimbang</b> ±2560 px. <b>HD Asli</b> mengirim ukuran penuh (file besar): di layar WhatsApp sebelum kirim, ketuk ikon <b>HD</b> supaya WhatsApp tidak mengecilkannya.</div>
         <div class="hint">🔠 <b>Besar</b> adalah bawaan, dipilih supaya tulisan tetap terbaca oleh pembaca lanjut usia dan saat foto dilihat kecil di WhatsApp. <b>Jumbo</b> untuk kebutuhan cetak laporan. Panel otomatis menyesuaikan tingginya, dan kalau tetap tidak muat, kredit dan catatan dikorbankan lebih dulu — koordinat dan tanggal tidak pernah dibuang.</div>
         <div class="hint">🤖 <b>Otomatis</b>: aplikasi memilih sendiri — potret/lanskap, lengkap/ringkas, panel gelap atau terang mengikuti terang-gelapnya bagian bawah gambar, supaya tulisan selalu terbaca. Pilihan ini dipakai untuk foto tersimpan maupun rekaman video, dan diingat sampai diganti.</div>
       </div>
@@ -392,7 +439,7 @@
             <div class="coord-hint">Tips: bisa tempel "-1.612345, 116.201234" langsung di kolom Latitude, kolom Longitude terisi otomatis.</div>
           </div>
           <button type="button" class="btn-locate" id="btnLocateNow">📍 Gunakan Lokasi Saat Ini</button>
-          <div class="mini-map" id="reviewMap"><button type="button" class="map-sat-toggle" id="reviewSatToggle">🛰️ Satelit</button></div>
+          <div class="mini-map" id="reviewMap"><button type="button" class="map-sat-toggle" id="reviewSatToggle">🗺️ Tipe Peta</button></div>
           <div class="field-group">
             <label>Alamat Otomatis</label>
             <input type="text" id="addrAuto" readonly placeholder="Mendeteksi alamat...">
@@ -436,17 +483,18 @@
       <span id="batchCount">0 dipilih</span>
       <div class="batch-bar-actions">
         <button type="button" id="btnBatchCancel">Batal</button>
+        <button type="button" id="btnBatchSelectAll">Pilih Semua</button>
         <button type="button" id="btnBatchShare">📤 Bagikan Terpilih</button>
       </div>
     </div>
 
     <!-- TAB: MAP -->
     <div class="tab-panel" id="tabMap">
-      <div id="overviewMap"><button type="button" class="map-sat-toggle" id="overviewSatToggle">🛰️ Satelit</button></div>
+      <div id="overviewMap"><button type="button" class="map-sat-toggle" id="overviewSatToggle">🗺️ Tipe Peta</button></div>
     </div>
   </div>
 
-  <footer>Geo Foto Lapangan &middot; BAPENDA Kabupaten Paser &middot; Data foto tersimpan offline di perangkat masing-masing</footer>
+  <footer>Geotag GPS &middot; BAPENDA Kabupaten Paser &middot; Data foto tersimpan offline di perangkat masing-masing</footer>
 </div>
 
 <!-- Live video capture modal -->
@@ -470,6 +518,7 @@
       <button type="button" data-stampsize="besar" class="active">🔠 Besar</button>
       <button type="button" data-stampsize="jumbo">🔠 Jumbo</button>
     </div>
+    <button type="button" class="tool-btn" id="btnLiveMapType" style="margin:0 0 8px;">🗺️ Tipe Peta: Normal</button>
     <div class="live-gps-status" id="liveStampInfo" style="margin:0 0 6px;">Mode stempel: Otomatis</div>
     <div class="live-gps-status" id="liveHintOrient" style="margin:0 0 8px;">Orientasi "Otomatis" mengikuti posisi HP dan dikunci begitu rekaman dimulai. Kalau rotasi otomatis HP dimatikan, pilih Potret/Lanskap manual.</div>
     <div class="live-preview-wrap">
@@ -482,6 +531,32 @@
       <button type="button" id="btnStartLiveRecord">⏺ Mulai Rekam</button>
       <button type="button" id="btnStopLiveRecord" style="display:none">⏹ Berhenti</button>
     </div>
+  </div>
+</div>
+
+<!-- Tipe Peta -->
+<div class="overlay" id="mapTypeOverlay">
+  <div class="maptype-box">
+    <div class="maptype-head"><button type="button" id="btnMapTypeBack" aria-label="Kembali">←</button><span>Tipe Peta</span></div>
+    <div class="maptype-body">
+      <div class="maptype-grid">
+        <button type="button" class="maptype-card active" data-maptype="normal"><span class="mt-thumb mt-normal"></span><span class="mt-label">Normal</span></button>
+        <button type="button" class="maptype-card" data-maptype="satellite"><span class="mt-thumb mt-satellite"></span><span class="mt-label">Satelit</span></button>
+        <button type="button" class="maptype-card" data-maptype="terrain"><span class="mt-thumb mt-terrain"></span><span class="mt-label">Terrain</span></button>
+        <button type="button" class="maptype-card" data-maptype="hybrid"><span class="mt-thumb mt-hybrid"></span><span class="mt-label">Hybrid</span></button>
+      </div>
+      <div class="mt-hint">Pilihan ini dipakai di peta aplikasi dan di kotak peta pada stempel foto &amp; video. Diingat sampai diganti.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Bagikan banyak foto -->
+<div class="overlay" id="shareSheet">
+  <div class="edit-box">
+    <h3>📤 Bagikan Foto</h3>
+    <div class="hint" id="shareSheetInfo" style="margin-bottom:12px;"></div>
+    <div id="shareSheetButtons"></div>
+    <button type="button" class="mini-act" id="btnShareSheetClose" style="width:100%;padding:10px;">Tutup</button>
   </div>
 </div>
 
@@ -508,7 +583,7 @@
         <button type="button" id="btnApplyEditCoord" class="btn-apply-coord">📌 Terapkan</button>
       </div>
     </div>
-    <div class="mini-map" id="editMap"><button type="button" class="map-sat-toggle" id="editSatToggle">🛰️ Satelit</button></div>
+    <div class="mini-map" id="editMap"><button type="button" class="map-sat-toggle" id="editSatToggle">🗺️ Tipe Peta</button></div>
     <div class="field-group">
       <label>Alamat Otomatis</label>
       <input type="text" id="editAddrAuto" readonly>

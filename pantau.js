@@ -1,5 +1,5 @@
 /* ==========================================================================
-   PETA PANTAU - Geo Foto Lapangan (halaman publik, real-time)
+   PETA PANTAU - Geotag GPS (halaman publik, real-time)
    ========================================================================== */
 
 const CATEGORY_META = {

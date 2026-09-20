@@ -1,6 +1,6 @@
 {
-  "name": "Geo Foto Lapangan - BAPENDA Paser",
-  "short_name": "Geo Foto",
+  "name": "Geotag GPS - BAPENDA Paser",
+  "short_name": "Geotag GPS",
   "description": "Aplikasi dokumentasi foto dan video lapangan dengan koordinat GPS otomatis untuk pendataan pajak daerah BAPENDA Kabupaten Paser.",
   "start_url": "./index.html",
   "scope": "./",

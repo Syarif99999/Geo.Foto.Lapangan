@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Geo Foto Lapangan - BAPENDA Kabupaten Paser
+   Geotag GPS - BAPENDA Kabupaten Paser
    ========================================================================== */
 
 const CATEGORIES = [
@@ -288,6 +288,49 @@ async function loadRawBitmap(file){
   });
 }
 
+/* Perkecil gambar BERTAHAP (dibagi dua berulang-ulang) dengan smoothing
+   kualitas tinggi. Satu lompatan besar (mis. 4096 -> 1600 langsung) membuat
+   tulisan halus jadi bergerigi/pecah; bertahap jauh lebih tajam. Selalu
+   mengembalikan kanvas baru berukuran persis w x h. */
+function resizeCanvasHQ(src, w, h){
+  let cur = src;
+  let curW = src.naturalWidth || src.width, curH = src.naturalHeight || src.height;
+  while(curW / 2 >= w && curH / 2 >= h){
+    const nw = Math.max(w, Math.round(curW / 2)), nh = Math.max(h, Math.round(curH / 2));
+    const c = document.createElement('canvas'); c.width = nw; c.height = nh;
+    const x = c.getContext('2d'); x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+    x.drawImage(cur, 0, 0, curW, curH, 0, 0, nw, nh);
+    cur = c; curW = nw; curH = nh;
+  }
+  const out = document.createElement('canvas'); out.width = w; out.height = h;
+  const ox = out.getContext('2d'); ox.imageSmoothingEnabled = true; ox.imageSmoothingQuality = 'high';
+  ox.drawImage(cur, 0, 0, curW, curH, 0, 0, w, h);
+  return out;
+}
+
+/* Penajaman ringan (unsharp 4-arah) setelah gambar diperkecil, untuk
+   mengembalikan ketajaman yang hilang saat pengecilan. */
+function sharpenCanvas(canvas, amount){
+  try{
+    const w = canvas.width, h = canvas.height, ctx = canvas.getContext('2d');
+    const src = ctx.getImageData(0, 0, w, h), s = src.data;
+    const out = ctx.createImageData(w, h), o = out.data;
+    const a = amount, c = 1 + 4 * a;
+    for(let y = 0; y < h; y++){
+      const y0 = y > 0 ? y - 1 : y, y1 = y < h - 1 ? y + 1 : y;
+      for(let x = 0; x < w; x++){
+        const x0 = x > 0 ? x - 1 : x, x1 = x < w - 1 ? x + 1 : x;
+        const i = (y*w + x) * 4, iu = (y0*w + x) * 4, id = (y1*w + x) * 4, il = (y*w + x0) * 4, ir = (y*w + x1) * 4;
+        o[i]   = c*s[i]   - a*(s[iu]   + s[id]   + s[il]   + s[ir]);
+        o[i+1] = c*s[i+1] - a*(s[iu+1] + s[id+1] + s[il+1] + s[ir+1]);
+        o[i+2] = c*s[i+2] - a*(s[iu+2] + s[id+2] + s[il+2] + s[ir+2]);
+        o[i+3] = 255;
+      }
+    }
+    ctx.putImageData(out, 0, 0);
+  }catch(e){ console.warn('Penajaman dilewati:', e); }
+}
+
 async function compressImage(file, orientation, maxDim, quality){
   const bitmap = await loadRawBitmap(file);
   const width = bitmap.width || bitmap.naturalWidth;
@@ -300,8 +343,11 @@ async function compressImage(file, orientation, maxDim, quality){
   canvas.width = swapWH ? targetH : targetW;
   canvas.height = swapWH ? targetW : targetH;
   const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  // Diperkecil bertahap (bukan satu lompatan) supaya tidak bergerigi / pecah.
+  const scaled = scale < 1 ? resizeCanvasHQ(bitmap, targetW, targetH) : bitmap;
   applyOrientationTransform(ctx, orientation, targetW, targetH);
-  ctx.drawImage(bitmap, 0, 0, targetW, targetH);
+  ctx.drawImage(scaled, 0, 0, targetW, targetH);
   if(bitmap.close) bitmap.close();
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b), 'image/jpeg', quality));
 }
@@ -364,24 +410,74 @@ function pinDivIcon(color, label){
     iconSize:[30,42], iconAnchor:[15,42], popupAnchor:[0,-38]
   });
 }
-function makeOsmLayer(){
-  return L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors', maxZoom: 19
-  });
+/* ---- TIPE PETA (Normal / Satelit / Terrain / Hybrid) ----
+   Satu pilihan global: dipakai peta di aplikasi DAN kotak peta pada stempel
+   foto/video. Diingat sampai diganti. */
+const MAP_TYPES = {
+  normal:    { label:'Normal',  stampAttr:'OSM',
+               layers:[ 'https://tile.openstreetmap.org/{z}/{x}/{y}.png' ],
+               attribution:'&copy; OpenStreetMap contributors' },
+  satellite: { label:'Satelit', stampAttr:'Esri',
+               layers:[ 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}' ],
+               attribution:'Tiles &copy; Esri' },
+  terrain:   { label:'Terrain', stampAttr:'Esri',
+               layers:[ 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}' ],
+               attribution:'Tiles &copy; Esri' },
+  hybrid:    { label:'Hybrid',  stampAttr:'Esri',
+               layers:[ 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                        'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
+                        'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}' ],
+               attribution:'Tiles &copy; Esri' }
+};
+let mapType = 'normal';
+try{
+  const savedMapType = localStorage.getItem('geotagMapType');
+  if(savedMapType && MAP_TYPES[savedMapType]) mapType = savedMapType;
+}catch(e){}
+
+function buildMapTypeGroup(type){
+  const def = MAP_TYPES[type] || MAP_TYPES.normal;
+  return L.layerGroup(def.layers.map((url, i) =>
+    L.tileLayer(url, { maxZoom:19, zIndex:i + 1, attribution: i === 0 ? def.attribution : '' })));
 }
-function makeSatLayer(){
-  return L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    attribution: 'Tiles &copy; Esri', maxZoom: 19
-  });
+
+// Daftar peta Leaflet yang sedang hidup, supaya ganti tipe peta langsung
+// berlaku di semuanya (peta review, peta ringkasan, peta edit).
+const mapTypeTargets = {};
+function applyMapTypeToTarget(t){
+  if(t.group) t.map.removeLayer(t.group);
+  t.group = buildMapTypeGroup(mapType).addTo(t.map);
+  t.btn.textContent = `🗺️ ${MAP_TYPES[mapType].label}`;
 }
-function attachSatToggle(map, layers, btn){
-  let satOn = false;
-  btn.onclick = () => {
-    satOn = !satOn;
-    map.removeLayer(satOn ? layers.osm : layers.sat);
-    map.addLayer(satOn ? layers.sat : layers.osm);
-    btn.textContent = satOn ? '🗺️ Standar' : '🛰️ Satelit';
-  };
+function attachMapType(name, map, btn){
+  const t = { map, btn, group:null };
+  mapTypeTargets[name] = t;
+  applyMapTypeToTarget(t);
+  btn.onclick = (e) => { if(e) e.stopPropagation(); openMapTypeSheet(); };
+  return t;
+}
+function setMapType(type){
+  mapType = MAP_TYPES[type] ? type : 'normal';
+  try{ localStorage.setItem('geotagMapType', mapType); }catch(e){}
+  Object.keys(mapTypeTargets).forEach(name => {
+    try{ applyMapTypeToTarget(mapTypeTargets[name]); }
+    catch(e){ delete mapTypeTargets[name]; } // peta sudah ditutup
+  });
+  document.querySelectorAll('[data-maptype]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.maptype === mapType);
+  });
+  const liveBtn = document.getElementById('btnLiveMapType');
+  if(liveBtn) liveBtn.textContent = `🗺️ Tipe Peta: ${MAP_TYPES[mapType].label}`;
+  // kotak peta pada pratinjau kamera live ikut diganti
+  liveMapCrop = null; liveMapKey = '';
+}
+function openMapTypeSheet(){
+  document.getElementById('mapTypeOverlay').classList.add('show');
+  bfPush('mapTypeOverlay');
+}
+function closeMapTypeSheet(){ bfClose('mapTypeOverlay'); }
+function _viewCloseMapTypeSheet(){
+  document.getElementById('mapTypeOverlay').classList.remove('show');
 }
 
 /* ---- Review map (single draggable pin) ---- */
@@ -392,9 +488,7 @@ function initReviewMap(lat, lng){
   const hasCoord = lat != null && lng != null;
   const center = hasCoord ? [lat, lng] : FALLBACK_CENTER;
   reviewMap = L.map(el, { zoomControl:true }).setView(center, hasCoord ? 17 : 14);
-  const osm = makeOsmLayer().addTo(reviewMap);
-  const sat = makeSatLayer();
-  reviewLayers = { osm, sat };
+  reviewLayers = null;
   reviewMarker = L.marker(center, { draggable:true, icon: pinDivIcon() }).addTo(reviewMap);
   reviewMarker.on('dragend', () => {
     const p = reviewMarker.getLatLng();
@@ -404,7 +498,7 @@ function initReviewMap(lat, lng){
     reviewMarker.setLatLng(e.latlng);
     onReviewCoordChanged(e.latlng.lat, e.latlng.lng);
   });
-  attachSatToggle(reviewMap, reviewLayers, document.getElementById('reviewSatToggle'));
+  attachMapType('review', reviewMap, document.getElementById('reviewSatToggle'));
   setTimeout(() => reviewMap.invalidateSize(), 150);
 }
 
@@ -414,10 +508,7 @@ async function renderOverviewMap(){
   const el = document.getElementById('overviewMap');
   if(overviewMap){ overviewMap.remove(); overviewMap = null; overviewMarkers = []; }
   overviewMap = L.map(el, { zoomControl:true }).setView(FALLBACK_CENTER, 13);
-  const osm = makeOsmLayer().addTo(overviewMap);
-  const sat = makeSatLayer();
-  overviewLayers = { osm, sat };
-  attachSatToggle(overviewMap, overviewLayers, document.getElementById('overviewSatToggle'));
+  attachMapType('overview', overviewMap, document.getElementById('overviewSatToggle'));
 
   const entries = await getEntriesByCategory(currentCategory);
   if(entries.length === 0){
@@ -446,9 +537,7 @@ function initEditMap(lat, lng, businessName){
   if(editMap){ editMap.remove(); editMap = null; }
   const center = [lat, lng];
   editMap = L.map(el, { zoomControl:true }).setView(center, 17);
-  const osm = makeOsmLayer().addTo(editMap);
-  const sat = makeSatLayer();
-  editLayers = { osm, sat };
+  editLayers = null;
   editMarker = L.marker(center, { draggable:true, icon: pinDivIcon('#c8952c', businessName) }).addTo(editMap);
   editMarker.on('dragend', () => {
     const p = editMarker.getLatLng();
@@ -458,7 +547,7 @@ function initEditMap(lat, lng, businessName){
     editMarker.setLatLng(e.latlng);
     syncEditCoordInputs(e.latlng.lat, e.latlng.lng);
   });
-  attachSatToggle(editMap, editLayers, document.getElementById('editSatToggle'));
+  attachMapType('edit', editMap, document.getElementById('editSatToggle'));
   syncEditCoordInputs(lat, lng);
   setTimeout(() => editMap.invalidateSize(), 150);
 }
@@ -997,7 +1086,7 @@ function drawGeoStamp(ctx, W, H, data, options){
     ? `Lat ${Number(data.lat).toFixed(6)}°  Long ${Number(data.lng).toFixed(6)}°`
     : (data.coordFallback || 'GPS mencari lokasi...');
   const dateLine = data.dateText || formatStampDate(data.timestamp || Date.now());
-  const credit = data.credit || 'Geo Foto Lapangan · BAPENDA Paser';
+  const credit = data.credit || 'Geotag GPS · BAPENDA Paser';
 
   // Ukuran huruf sedikit dikecilkan dibanding v42 supaya panel tidak melar.
   // Khusus LANSKAP hurufnya dinaikkan ~18%: di bingkai mendatar, `base`
@@ -1120,6 +1209,7 @@ function drawGeoStamp(ctx, W, H, data, options){
     ctx.save();
     roundRectPath(ctx, mapX, mapY, mapSize, mapSize, template === 'elegan' ? mapSize/2 : Math.max(6, Math.round(base*0.012)));
     ctx.clip();
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
     if(data.mapCrop){
       ctx.drawImage(data.mapCrop.canvas, data.mapCrop.sx, data.mapCrop.sy, data.mapCrop.sw, data.mapCrop.sh, mapX, mapY, mapSize, mapSize);
     }else{
@@ -1135,7 +1225,7 @@ function drawGeoStamp(ctx, W, H, data, options){
       ctx.font = `${Math.max(6, Math.round(mapSize*0.11))}px Arial`;
       ctx.fillStyle = 'rgba(255,255,255,0.85)';
       ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-      ctx.fillText('Esri', mapX + mapSize*0.07, mapY + mapSize*0.96);
+      ctx.fillText(data.mapCrop.attr || 'Esri', mapX + mapSize*0.07, mapY + mapSize*0.96);
     }
     ctx.restore();
     drawMapPin(ctx, mapX + mapSize*0.5, mapY + mapSize*0.62, mapSize*0.5, '#ff3b30');
@@ -1153,7 +1243,7 @@ function drawGeoStamp(ctx, W, H, data, options){
   });
 
   if(!compact && options.badge !== false){
-    const bt = data.badge || 'Geo Foto Lapangan';
+    const bt = data.badge || 'Geotag GPS';
     const bs = Math.max(8, Math.round(base*0.014));
     ctx.font = `700 ${bs}px Arial`;
     const bw = ctx.measureText(bt).width + bs*1.7, bh = Math.round(bs*2);
@@ -1342,7 +1432,7 @@ function drawLiveStamp(ctx, canvas, video, rotation=0){
   ctx.restore();
 
   drawGeoStamp(ctx, W, H, {
-    title: deriveRegionTitle(liveAddress) || 'Geo Foto Lapangan',
+    title: deriveRegionTitle(liveAddress) || 'Geotag GPS',
     address: liveAddress || 'Lokasi sedang dicari...',
     lat: liveGps ? liveGps.lat : null,
     lng: liveGps ? liveGps.lng : null,
@@ -1447,7 +1537,7 @@ async function generateStampedVideo(entry){
     lat: entry.lat, lng: entry.lng,
     timestamp: entry.timestamp,
     mapCrop,
-    badge: 'Geo Foto Lapangan'
+    badge: 'Geotag GPS'
   };
   // Mode stempel dikunci di frame pertama supaya template/warnanya tidak
   // berkedip-ganti di tengah video (mode OTOMATIS dievaluasi sekali saja).
@@ -1802,50 +1892,154 @@ async function forceResyncAll(){
   }
 }
 
-async function onBatchShare(){
-  if(selectedIds.size === 0){ showToast('Pilih minimal 1 foto dulu.'); return; }
-  if(selectedIds.size > 10){ showToast('Maksimal 10 foto sekaligus untuk satu kali bagikan.'); return; }
+/* ---- BAGIKAN BANYAK FOTO ----
+   Batas lama (10 foto) dihapus. Sekarang bisa memilih sampai SHARE_MAX_SELECT
+   foto. Karena satu kali "share" ke WhatsApp dibatasi jumlah lampirannya,
+   foto dibagi per SHARE_CHUNK dan dikirim lewat tombol per bagian.
+   Foto disiapkan dulu, lalu tiap bagian dikirim dari SATU KETUKAN baru —
+   ini juga menghindari kegagalan share karena "izin sentuh" browser habis
+   saat penyiapan foto memakan waktu lama. */
+const SHARE_MAX_SELECT = 100;
+const SHARE_CHUNK = 30;
+let sharePlan = null;
 
-  showToast(`Menyiapkan ${selectedIds.size} foto berkoordinat...`);
+async function onBatchShare(){
+  const total = selectedIds.size;
+  if(total === 0){ showToast('Pilih minimal 1 foto dulu.'); return; }
+  if(total > SHARE_MAX_SELECT){ showToast(`Maksimal ${SHARE_MAX_SELECT} foto sekali proses. Kurangi pilihan Anda.`); return; }
+
   const btn = document.getElementById('btnBatchShare');
   btn.disabled = true;
-
+  const opts = shareRenderOptions();
+  const files = [], ids = [];
+  let skipped = 0, lowRes = 0;
   try{
-    const files = [];
-    for(const id of selectedIds){
-      const entry = await getEntry(id);
-      if(!entry) continue;
-      const stampedBlob = await generateStampedPhoto(entry);
-      const safeName = (entry.businessName || catLabel(entry.category)).replace(/[^a-z0-9]+/gi, '_');
-      const fileName = `GeoFoto_${safeName}_${new Date(entry.timestamp).toISOString().slice(0,10)}_${id}.jpg`;
-      files.push(new File([stampedBlob], fileName, { type:'image/jpeg' }));
-      const newCount = (entry.shareCount || 0) + 1;
-      await updateEntry(id, { shareCount: newCount, lastSharedAt: Date.now() });
+    const list = Array.from(selectedIds);
+    for(let i = 0; i < list.length; i++){
+      const id = list[i];
+      showToast(`Menyiapkan ${i + 1} dari ${list.length}...`);
+      try{
+        const entry = await getEntry(id);
+        if(!entry){ skipped++; continue; }
+        const safeName = (entry.businessName || catLabel(entry.category)).replace(/[^a-z0-9]+/gi, '_');
+        const dateStr = new Date(entry.timestamp).toISOString().slice(0,10);
+        if(entry.mediaType === 'video'){
+          if(!entry.videoBlob){ skipped++; continue; }
+          const mime = entry.mimeType || 'video/webm';
+          files.push(new File([entry.videoBlob], `GeotagGPS_${safeName}_${dateStr}_${id}.${mime.includes('mp4') ? 'mp4' : 'webm'}`, { type:mime }));
+        }else{
+          const blob = await generateStampedPhoto(entry, opts);
+          if(lastStampLowRes) lowRes++;
+          files.push(new File([blob], `GeotagGPS_${safeName}_${dateStr}_${id}.jpg`, { type:'image/jpeg' }));
+        }
+        ids.push(id);
+      }catch(err){
+        console.warn('Melewati satu data karena gagal diproses:', id, err);
+        skipped++;
+      }
     }
-
     if(files.length === 0){ showToast('Tidak ada foto valid untuk dibagikan.'); return; }
 
-    if(navigator.canShare && navigator.canShare({ files })){
-      await navigator.share({ files });
-    } else {
-      for(const f of files){
-        const url = URL.createObjectURL(f);
-        const a = document.createElement('a');
-        a.href = url; a.download = f.name;
-        document.body.appendChild(a); a.click(); a.remove();
-        await new Promise(r => setTimeout(r, 300));
-        URL.revokeObjectURL(url);
-      }
-      showToast(`${files.length} foto sudah diunduh — lampirkan manual ke WhatsApp.`);
+    const parts = [];
+    for(let i = 0; i < files.length; i += SHARE_CHUNK){
+      parts.push({ files: files.slice(i, i + SHARE_CHUNK), ids: ids.slice(i, i + SHARE_CHUNK), done:false });
     }
-
-    toggleBatchMode();
+    sharePlan = { parts, skipped, lowRes, total: files.length };
+    openShareSheet();
   }catch(e){
-    if(e && e.name === 'AbortError'){ /* dibatalkan user */ }
-    else { console.error('Gagal bagikan banyak foto:', e); showToast('Gagal menyiapkan foto untuk dibagikan.'); }
+    console.error('Gagal menyiapkan foto untuk dibagikan:', e);
+    showToast('Gagal menyiapkan foto untuk dibagikan.');
   } finally {
     btn.disabled = false;
   }
+}
+
+function renderShareSheet(){
+  if(!sharePlan) return;
+  const p = sharePlan;
+  const info = [];
+  info.push(`${p.total} file siap dikirim · kualitas: <b>${escapeHtml(SHARE_QUALITY[shareQuality].label)}</b>.`);
+  if(p.parts.length > 1){
+    info.push(`Supaya aman dan stabil, foto dibagi jadi <b>${p.parts.length} bagian</b> (maks ${SHARE_CHUNK} file per bagian). Ketuk tombol di bawah satu per satu, berurutan.`);
+  }
+  if(p.skipped) info.push(`⚠️ ${p.skipped} data dilewati (tidak punya file/gagal diproses).`);
+  if(p.lowRes) info.push(`⚠️ ${p.lowRes} foto beresolusi kecil (hasil pulihan cloud), jadi memang tampak pecah.`);
+  document.getElementById('shareSheetInfo').innerHTML = info.join('<br>');
+  const box = document.getElementById('shareSheetButtons');
+  box.innerHTML = '';
+  p.parts.forEach((part, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'share-part-btn' + (part.done ? ' done' : '');
+    const label = p.parts.length > 1 ? `Bagian ${i + 1} dari ${p.parts.length}` : 'Kirim sekarang';
+    b.textContent = (part.done ? '✅ ' : '📤 ') + `${label} (${part.files.length} file)`;
+    b.addEventListener('click', () => shareSheetPart(i));
+    box.appendChild(b);
+  });
+}
+
+function openShareSheet(){
+  renderShareSheet();
+  document.getElementById('shareSheet').classList.add('show');
+  bfPush('shareSheet');
+}
+function closeShareSheet(){ bfClose('shareSheet'); }
+function _viewCloseShareSheet(){
+  document.getElementById('shareSheet').classList.remove('show');
+}
+
+async function downloadFiles(files){
+  for(const f of files){
+    const url = URL.createObjectURL(f);
+    const a = document.createElement('a');
+    a.href = url; a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    await new Promise(r => setTimeout(r, 300));
+    setTimeout(() => URL.revokeObjectURL(url), 8000);
+  }
+}
+
+async function shareSheetPart(i){
+  const part = sharePlan && sharePlan.parts[i];
+  if(!part) return;
+  let ok = false;
+  try{
+    if(navigator.canShare && navigator.canShare({ files: part.files })){
+      await navigator.share({ files: part.files });   // ketukan langsung = izin sentuh masih segar
+      ok = true;
+    }else{
+      await downloadFiles(part.files);
+      showToast(`${part.files.length} file sudah diunduh — lampirkan manual ke WhatsApp.`);
+      ok = true;
+    }
+  }catch(e){
+    if(e && e.name === 'AbortError') return;        // dibatalkan pengguna
+    console.warn('Web Share gagal, beralih ke unduhan:', e);
+    try{ await downloadFiles(part.files); showToast('Bagikan langsung gagal — file diunduh, lampirkan manual.'); ok = true; }
+    catch(e2){ showToast('Gagal membagikan foto.'); }
+  }
+  if(!ok) return;
+  part.done = true;
+  for(const id of part.ids){
+    const en = await getEntry(id);
+    if(en) await updateEntry(id, { shareCount:(en.shareCount || 0) + 1, lastSharedAt: Date.now() });
+  }
+  renderShareSheet();
+  if(sharePlan.parts.every(p => p.done)){
+    closeShareSheet();
+    sharePlan = null;
+    if(batchMode) toggleBatchMode(); else renderList();
+  }
+}
+
+async function onBatchSelectAll(){
+  const list = trashSelectMode ? await getTrashByCategory(currentCategory) : await getEntriesByCategory(currentCategory);
+  const cap = trashSelectMode ? list.length : SHARE_MAX_SELECT;
+  selectedIds.clear();
+  list.slice(0, cap).forEach(en => selectedIds.add(en.id));
+  if(!trashSelectMode && list.length > SHARE_MAX_SELECT) showToast(`Dipilih ${SHARE_MAX_SELECT} pertama (batas sekali proses).`);
+  updateBatchBar();
+  renderList();
 }
 
 /* ==========================================================================
@@ -2219,8 +2413,10 @@ function fitSingleLineFontSize(ctx, text, size, family, weight, maxWidth, minSiz
   return s;
 }
 
-async function loadSatelliteMapCrop(lat, lng, zoom, size){
+async function loadMapCrop(lat, lng, zoom, size, type){
   if(lat == null || lng == null || !isFinite(lat) || !isFinite(lng)) return null;
+  type = MAP_TYPES[type] ? type : mapType;
+  const def = MAP_TYPES[type];
   const n = Math.pow(2, zoom);
   const worldX = (lng + 180) / 360 * n;
   const latRad = lat * Math.PI / 180;
@@ -2233,30 +2429,69 @@ async function loadSatelliteMapCrop(lat, lng, zoom, size){
   const mosaic = document.createElement('canvas');
   mosaic.width = tileSize * 3; mosaic.height = tileSize * 3;
   const mctx = mosaic.getContext('2d');
-  const loadTile = (x, y) => new Promise((resolve, reject) => {
+  mctx.imageSmoothingEnabled = true; mctx.imageSmoothingQuality = 'high';
+  // Lapisan pertama = dasar peta (wajib). Lapisan berikutnya (label jalan/
+  // tempat pada mode Hybrid) opsional: kalau gagal dimuat, peta tetap jadi.
+  const loadTile = (tpl, x, y, required) => new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${y}/${((x % n) + n) % n}`;
+    img.onerror = () => required ? reject(new Error('tile gagal')) : resolve(null);
+    img.src = tpl.replace('{z}', zoom).replace('{y}', y).replace('{x}', ((x % n) + n) % n);
   });
   try{
+    const jobs = [];
     for(let dy = -1; dy <= 1; dy++){
       for(let dx = -1; dx <= 1; dx++){
-        const tile = await loadTile(tileX + dx, tileY + dy);
-        mctx.drawImage(tile, (dx+1)*tileSize, (dy+1)*tileSize, tileSize, tileSize);
+        jobs.push(Promise.all(def.layers.map((tpl, i) => loadTile(tpl, tileX + dx, tileY + dy, i === 0)))
+          .then(imgs => ({ dx, dy, imgs })));
       }
     }
+    const done = await Promise.all(jobs);
+    done.forEach(({ dx, dy, imgs }) => {
+      imgs.forEach(im => { if(im) mctx.drawImage(im, (dx+1)*tileSize, (dy+1)*tileSize, tileSize, tileSize); });
+    });
     const cropX = tileSize + fracX*tileSize - size/2;
     const cropY = tileSize + fracY*tileSize - size/2;
-    return { canvas:mosaic, sx:cropX, sy:cropY, sw:size, sh:size };
+    return { canvas:mosaic, sx:cropX, sy:cropY, sw:size, sh:size, attr:def.stampAttr, type };
   }catch(e){
-    console.warn('Citra satelit untuk stempel tidak tersedia:', e);
+    console.warn('Peta untuk stempel tidak tersedia:', e);
     return null;
   }
 }
+// Nama lama dipertahankan supaya semua pemanggil tetap jalan; tipe peta
+// otomatis mengikuti pilihan global (mapType).
+function loadSatelliteMapCrop(lat, lng, zoom, size, type){
+  return loadMapCrop(lat, lng, zoom, size, type);
+}
 
-async function generateStampedPhoto(entry){
+/* Kualitas foto saat DIBAGIKAN. WhatsApp mengecilkan & menekan ulang foto
+   besar dengan cara kasar, sehingga tulisan stempel jadi pecah. Karena itu
+   foto disiapkan lebih dulu pada ukuran yang pas (diperkecil bertahap +
+   dipertajam), dan stempel digambar SETELAH pengecilan, jadi hurufnya tajam
+   di ukuran akhir. */
+const SHARE_QUALITY = {
+  wa:       { label:'WhatsApp',     maxSide:1600, quality:0.95, sharpen:0.30 },
+  seimbang: { label:'Seimbang',     maxSide:2560, quality:0.95, sharpen:0.25 },
+  hd:       { label:'HD (ukuran asli)', maxSide:0, quality:0.97, sharpen:0 }
+};
+let shareQuality = 'wa';
+try{
+  const sq = localStorage.getItem('geotagShareQuality');
+  if(sq && SHARE_QUALITY[sq]) shareQuality = sq;
+}catch(e){}
+function setShareQuality(q){
+  shareQuality = SHARE_QUALITY[q] ? q : 'wa';
+  try{ localStorage.setItem('geotagShareQuality', shareQuality); }catch(e){}
+  document.querySelectorAll('[data-shareq]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.shareq === shareQuality);
+  });
+}
+function shareRenderOptions(){ return SHARE_QUALITY[shareQuality]; }
+
+let lastStampLowRes = false;
+async function generateStampedPhoto(entry, opts){
+  opts = opts || {};
   const img = await new Promise((resolve, reject) => {
     const image = new Image();
     const url = URL.createObjectURL(entry.photoBlob);
@@ -2265,21 +2500,35 @@ async function generateStampedPhoto(entry){
     image.src = url;
   });
 
-  const W = img.naturalWidth || img.width;
-  const H = img.naturalHeight || img.height;
-  const canvas = document.createElement('canvas');
-  canvas.width = W; canvas.height = H;
+  const srcW = img.naturalWidth || img.width;
+  const srcH = img.naturalHeight || img.height;
+  // Foto hasil "Pulihkan dari Cloud" hanya thumbnail -> pasti tampak pecah.
+  lastStampLowRes = Math.max(srcW, srcH) < 900;
+  const scale = opts.maxSide ? Math.min(1, opts.maxSide / Math.max(srcW, srcH)) : 1;
+  const W = Math.max(2, Math.round(srcW * scale));
+  const H = Math.max(2, Math.round(srcH * scale));
+
+  let canvas;
+  if(scale < 1){
+    canvas = resizeCanvasHQ(img, W, H);
+    if(opts.sharpen) sharpenCanvas(canvas, opts.sharpen);
+  }else{
+    canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const c0 = canvas.getContext('2d');
+    c0.imageSmoothingEnabled = true; c0.imageSmoothingQuality = 'high';
+    c0.drawImage(img, 0, 0, W, H);
+  }
   const ctx = canvas.getContext('2d');
-  ctx.drawImage(img, 0, 0, W, H);
   URL.revokeObjectURL(img.src);
 
   const address = entry.addressManual || entry.addressAuto || '';
   const businessName = entry.businessName || '';
   const catText = catLabel(entry.category);
 
-  // Citra satelit untuk kotak peta kecil di kiri panel.
+  // Peta untuk kotak kecil di kiri panel (mengikuti Tipe Peta yang dipilih).
   let mapCrop = null;
-  try { mapCrop = await loadSatelliteMapCrop(entry.lat, entry.lng, 17, 256); } catch(e) {}
+  try { mapCrop = await loadMapCrop(entry.lat, entry.lng, 17, 256); } catch(e) {}
 
   // Stempel digambar oleh mesin yang SAMA dengan video, jadi foto dan video
   // dari satu lokasi kelihatan satu gaya.
@@ -2291,12 +2540,10 @@ async function generateStampedPhoto(entry){
     lat: entry.lat, lng: entry.lng,
     timestamp: entry.timestamp,
     mapCrop,
-    badge: 'Geo Foto Lapangan'
+    badge: 'Geotag GPS'
   }, { fresh:true });
 
-  // Satu kali encoding JPEG kualitas tinggi agar detail wajah, tulisan, dan
-  // tekstur bangunan tetap tajam saat dibagikan.
-  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.98));
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', opts.quality || 0.98));
 }
 
 async function shareEntry(id, withStamp){
@@ -2313,11 +2560,12 @@ async function shareEntry(id, withStamp){
   }
   showToast(entry.mediaType === 'video' ? 'Menyiapkan video...' : (withStamp ? 'Menyiapkan foto berkoordinat...' : 'Menyiapkan foto asli...'));
   try{
-    const mediaBlob = entry.mediaType === 'video' ? entry.videoBlob : (withStamp ? (entry.stampedPhotoBlob || await generateStampedPhoto(entry)) : entry.photoBlob);
+    const mediaBlob = entry.mediaType === 'video' ? entry.videoBlob : (withStamp ? await generateStampedPhoto(entry, shareRenderOptions()) : entry.photoBlob);
+    if(entry.mediaType !== 'video' && withStamp && lastStampLowRes){ showToast('⚠️ Foto ini hanya thumbnail (hasil pulihan cloud), jadi resolusinya kecil dan tampak pecah.'); }
     const mime = entry.mediaType === 'video' ? (entry.mimeType || 'video/webm') : 'image/jpeg';
     const ext = entry.mediaType === 'video' ? (mime.includes('mp4') ? 'mp4' : 'webm') : 'jpg';
     const safeName = (entry.businessName || catLabel(entry.category)).replace(/[^a-z0-9]+/gi, '_');
-    const fileName = `GeoFoto_${safeName}_${new Date(entry.timestamp).toISOString().slice(0,10)}.${ext}`;
+    const fileName = `GeotagGPS_${safeName}_${new Date(entry.timestamp).toISOString().slice(0,10)}.${ext}`;
     const file = new File([mediaBlob], fileName, { type:mime });
     let shared = false;
 
@@ -2336,7 +2584,7 @@ async function shareEntry(id, withStamp){
     try { shareSupported = !!(navigator.canShare && navigator.canShare({ files:[file] })); } catch(e) {}
     if(shareSupported){
       try {
-        await navigator.share({ files:[file], title:'Geo Foto Lapangan' });
+        await navigator.share({ files:[file], title:'Geotag GPS' });
         shared = true;
       } catch(e) {
         if(e && e.name === 'AbortError') throw e;
@@ -2656,6 +2904,7 @@ function closeEditOverlay(){
 function _viewCloseEditOverlay(){
   document.getElementById('editOverlay').classList.remove('show');
   if(editMap){ editMap.remove(); editMap = null; }
+  delete mapTypeTargets.edit;
   editingId = null;
 }
 async function saveEditOverlay(){
@@ -2737,7 +2986,7 @@ function buildExportWorkbook(entries, photoFolder){
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Data Foto Lapangan');
   const info = XLSX.utils.aoa_to_sheet([
-    ['Petunjuk Ekspor Geo Foto Lapangan'],
+    ['Petunjuk Ekspor Geotag GPS'],
     ['Koordinat', 'Latitude dan longitude otomatis dari setiap data.'],
     ['Buka Peta', 'Klik tautan untuk membuka lokasi di Google Maps.'],
     ['Buka Foto', 'Tautan foto bekerja jika file Excel berada bersama folder foto hasil ekspor ZIP. Foto sudah diberi stempel koordinat.']
@@ -2753,7 +3002,7 @@ async function exportExcel(){
   const wb = buildExportWorkbook(entries, 'foto');
   const catSlug = currentCategory;
   const dateSlug = new Date().toISOString().slice(0,10);
-  XLSX.writeFile(wb, `GeoFoto_${catSlug}_${dateSlug}.xlsx`);
+  XLSX.writeFile(wb, `GeotagGPS_${catSlug}_${dateSlug}.xlsx`);
   showToast('Excel berhasil diunduh. Tautan peta aktif; tautan foto tersedia dalam paket ZIP.');
 }
 
@@ -2770,8 +3019,9 @@ async function exportZip(){
     const en = entries[i];
     let exportBlob = en.mediaType === 'video' ? (en.videoBlob || en.thumbBlob) : (en.stampedPhotoBlob || en.photoBlob || en.thumbBlob);
     try{
-      if(en.mediaType !== 'video' && !en.stampedPhotoBlob && en.lat != null && en.lng != null && exportBlob){
-        exportBlob = await generateStampedPhoto({ ...en, photoBlob: exportBlob });
+      const sumber = en.photoBlob || en.thumbBlob;
+      if(en.mediaType !== 'video' && en.lat != null && en.lng != null && sumber){
+        exportBlob = await generateStampedPhoto({ ...en, photoBlob: sumber }, { quality:0.97 });
       }
     }catch(err){
       console.warn('Gagal memberi stempel koordinat saat ekspor:', err);
@@ -2781,7 +3031,7 @@ async function exportZip(){
 
   const wb = buildExportWorkbook(entries, photoFolderName);
   const workbookBytes = XLSX.write(wb, { bookType:'xlsx', type:'array' });
-  root.file(`GeoFoto_${currentCategory}.xlsx`, workbookBytes);
+  root.file(`GeotagGPS_${currentCategory}.xlsx`, workbookBytes);
   root.file('README.txt',
     'Buka file Excel untuk melihat koordinat, membuka Google Maps, dan membuka foto.\n' +
     'Jangan memindahkan file Excel tanpa folder foto agar tautan foto tetap bekerja.\n' +
@@ -2792,7 +3042,7 @@ async function exportZip(){
   const url = URL.createObjectURL(content);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `GeoFoto_${currentCategory}_${new Date().toISOString().slice(0,10)}.zip`;
+  a.download = `GeotagGPS_${currentCategory}_${new Date().toISOString().slice(0,10)}.zip`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -2932,6 +3182,8 @@ function _closeBfLayerView(layerName){
   if(layerName === 'photoOverlay') _viewClosePhotoOverlay();
   else if(layerName === 'editOverlay') _viewCloseEditOverlay();
   else if(layerName === 'liveRecordModal') _viewCloseLiveRecordModal();
+  else if(layerName === 'mapTypeOverlay') _viewCloseMapTypeSheet();
+  else if(layerName === 'shareSheet') _viewCloseShareSheet();
   else if(layerName === 'category') _viewGoToMenu();
 }
 
@@ -2986,6 +3238,23 @@ window.addEventListener('DOMContentLoaded', () => {
   setStampMode(stampMode);
   setStampScale(stampScale);
   setLiveOrientMode(liveOrientMode);
+  // Tipe peta + kualitas bagikan + Pilih Semua
+  document.querySelectorAll('[data-maptype]').forEach(btn => {
+    if(btn.closest('#mapTypeOverlay') || btn.closest('#mapTypeQuick')){
+      btn.addEventListener('click', () => {
+        setMapType(btn.dataset.maptype);
+        if(btn.closest('#mapTypeOverlay')) setTimeout(closeMapTypeSheet, 180);
+      });
+    }
+  });
+  document.getElementById('btnMapTypeBack').addEventListener('click', closeMapTypeSheet);
+  document.getElementById('mapTypeOverlay').addEventListener('click', (e) => { if(e.target.id === 'mapTypeOverlay') closeMapTypeSheet(); });
+  ['btnOpenMapType','btnLiveMapType'].forEach(id => { const el = document.getElementById(id); if(el) el.addEventListener('click', openMapTypeSheet); });
+  setMapType(mapType);
+  document.querySelectorAll('[data-shareq]').forEach(btn => btn.addEventListener('click', () => setShareQuality(btn.dataset.shareq)));
+  setShareQuality(shareQuality);
+  document.getElementById('btnShareSheetClose').addEventListener('click', closeShareSheet);
+  document.getElementById('btnBatchSelectAll').addEventListener('click', onBatchSelectAll);
   // Saat HP diputar, bingkai pratinjau langsung disesuaikan (kalau sedang
   // mode Otomatis dan tidak sedang merekam).
   const onOrientChange = () => {
