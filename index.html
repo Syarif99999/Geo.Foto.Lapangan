@@ -349,26 +349,6 @@
       <h2>Pilih Jenis Objek Pajak</h2>
       <p>Tap salah satu menu untuk mulai mengambil foto atau video lapangan.</p>
     </div>
-    <section class="field-group" style="margin:12px 0;">
-      <label for="officerNameInput">👤 Nama Petugas</label>
-      <input type="text" id="officerNameInput" maxlength="120" placeholder="Nama yang tampil di laporan dan stempel">
-      <div class="hint">Nama ini disimpan di perangkat ini dan ikut masuk ke cloud, Excel, serta stempel foto/video.</div>
-    </section>
-    <section class="field-group" style="margin:12px 0;">
-      <label>💾 Cadangan & kapasitas perangkat</label>
-      <div id="storageStatus" class="hint">Memeriksa penyimpanan...</div>
-      <div class="review-btns">
-        <button type="button" class="tool-btn" id="btnBackupLocal">⬇️ Cadangkan ZIP</button>
-        <button type="button" class="tool-btn" id="btnRestoreLocal">⬆️ Pulihkan ZIP</button>
-        <input type="file" id="inputRestoreLocal" accept=".zip,application/zip" hidden>
-      </div>
-    </section>
-    <section class="field-group" style="margin:12px 0;">
-      <label>🔐 Login admin</label>
-      <div class="coord-input-row"><input type="email" id="adminEmailInput" placeholder="Email admin"><input type="password" id="adminPasswordInput" placeholder="Kata sandi"></div>
-      <div class="review-btns"><button type="button" class="tool-btn" id="btnAdminLogin">Masuk sebagai admin</button><button type="button" class="tool-btn" id="btnAdminLogout" style="display:none">Keluar admin</button></div>
-      <div id="adminStatus" class="hint">Mode petugas: login anonim.</div>
-    </section>
     <div class="menu-grid" id="menuGrid"></div>
   </div>
 
@@ -648,7 +628,6 @@
 <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-app-check-compat.js"></script>
 <script src="firebase-config.js"></script>
 
 <script src="app.js"></script>

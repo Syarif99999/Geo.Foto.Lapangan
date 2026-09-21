@@ -35,8 +35,3 @@ const FIRESTORE_PHOTO_COLLECTION = 'geofoto_foto';
    Aturan lama (semua orang bebas baca/tulis/HAPUS) tidak dianjurkan lagi —
    pemilik data kini ditandai dengan ownerUid (login anonim otomatis).
    ========================================================================== */
-
-// Email admin yang diizinkan mengelola/menghapus semua data. Ganti dengan email resmi Anda.
-const ADMIN_EMAILS = ['ganti-email-admin@contoh.go.id'];
-// Isi dengan reCAPTCHA Enterprise site key setelah App Check diaktifkan di Firebase Console.
-const FIREBASE_APPCHECK_SITE_KEY = '';

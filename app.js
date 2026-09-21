@@ -359,11 +359,7 @@ function getCurrentPositionAsync(opts){
   opts = opts || { enableHighAccuracy:true, timeout:12000, maximumAge:0 };
   return new Promise((resolve, reject) => {
     if(!navigator.geolocation){ reject(new Error('Geolocation tidak didukung')); return; }
-    let best = null, watchId = null, timer = null, done = false;
-    const finish = (err) => { if(done) return; done=true; if(watchId != null) navigator.geolocation.clearWatch(watchId); clearTimeout(timer); if(best) resolve(best); else reject(err || new Error('GPS belum tersedia')); };
-    const accept = (pos) => { if(!best || pos.coords.accuracy < best.coords.accuracy) best=pos; };
-    watchId = navigator.geolocation.watchPosition(accept, (err) => { if(!best && err && err.code === 1) finish(err); }, { ...opts, timeout:0, maximumAge:0 });
-    timer = setTimeout(() => finish(), Math.min(opts.timeout || 12000, 8000));
+    navigator.geolocation.getCurrentPosition(resolve, reject, opts);
   });
 }
 
@@ -650,12 +646,12 @@ async function processQueueItem(){
 
   const orientation = (exif && exif.orientation) || 1;
   if(item.mediaType === 'video') {
-    let lat = null, lng = null, accuracy = null, coordSource = null;
+    let lat = null, lng = null, coordSource = null;
     if(item.source === 'camera') {
-      try { const pos = await getCurrentPositionAsync(); lat=pos.coords.latitude; lng=pos.coords.longitude; accuracy = Number(pos.coords.accuracy); coordSource=`GPS perangkat saat direkam (±${Math.round(pos.coords.accuracy)}m)`; } catch(e) {}
+      try { const pos = await getCurrentPositionAsync(); lat=pos.coords.latitude; lng=pos.coords.longitude; coordSource=`GPS perangkat saat direkam (±${Math.round(pos.coords.accuracy)}m)`; } catch(e) {}
     }
     const poster = new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270"><rect width="100%" height="100%" fill="#0f2647"/><text x="50%" y="50%" fill="#e0b354" text-anchor="middle" dominant-baseline="middle" font-size="34">VIDEO</text></svg>`], {type:'image/svg+xml'});
-    currentDraft = { file:item.file, source:item.source, mediaType:'video', videoBlob:item.file, stampedVideoBlob:item.file.geoStamped ? item.file : null, photoBlob:null, thumbBlob:poster, lat, lng, accuracy, coordSource, addressAuto:'', addressManual:'' };
+    currentDraft = { file:item.file, source:item.source, mediaType:'video', videoBlob:item.file, stampedVideoBlob:item.file.geoStamped ? item.file : null, photoBlob:null, thumbBlob:poster, lat, lng, coordSource, addressAuto:'', addressManual:'' };
     updateCoordBox(); initReviewMap(lat, lng); setReviewLoading(false);
     if(lat != null && lng != null) autoReverseGeocode(); else document.getElementById('addrAuto').placeholder='GPS tidak ditemukan — tandai lokasi di peta atau isi manual';
     return;
@@ -669,13 +665,13 @@ async function processQueueItem(){
     compressImage(item.file, orientation, 480, 0.85)
   ]);
 
-  let lat = null, lng = null, accuracy = null, coordSource = null;
+  let lat = null, lng = null, coordSource = null;
 
   if(item.source === 'camera'){
     try{
       const pos = await getCurrentPositionAsync();
       lat = pos.coords.latitude; lng = pos.coords.longitude;
-      accuracy = Number(pos.coords.accuracy); coordSource = `GPS perangkat saat difoto (±${Math.round(pos.coords.accuracy)}m)`;
+      coordSource = `GPS perangkat saat difoto (±${Math.round(pos.coords.accuracy)}m)`;
     }catch(e){
       if(exif && exif.lat != null){ lat = exif.lat; lng = exif.lng; coordSource = 'EXIF Foto'; }
     }
@@ -686,7 +682,7 @@ async function processQueueItem(){
   currentDraft = {
     file: item.file, source: item.source, mediaType:'photo',
     photoBlob, thumbBlob,
-    lat, lng, accuracy, coordSource,
+    lat, lng, coordSource,
     addressAuto: '', addressManual: ''
   };
 
@@ -704,7 +700,6 @@ async function processQueueItem(){
     currentDraft.lat = sharedLocationData.lat;
     currentDraft.lng = sharedLocationData.lng;
     currentDraft.coordSource = sharedLocationData.coordSource;
-    currentDraft.accuracy = sharedLocationData.accuracy;
     currentDraft.addressAuto = sharedLocationData.addressAuto;
     document.getElementById('businessNameInput').value = sharedLocationData.businessName;
     document.getElementById('addrAuto').value = sharedLocationData.addressAuto;
@@ -827,9 +822,7 @@ async function onLocateNowClick(){
     const pos = await getCurrentPositionAsync();
     currentDraft.lat = pos.coords.latitude;
     currentDraft.lng = pos.coords.longitude;
-    currentDraft.accuracy = Number(pos.coords.accuracy);
     currentDraft.coordSource = `GPS perangkat saat ini (±${Math.round(pos.coords.accuracy)}m)`;
-    if(pos.coords.accuracy > 30) showToast(`⚠️ Akurasi GPS buruk (±${Math.round(pos.coords.accuracy)} m). Tunggu atau tandai manual.`);
     updateCoordBox();
     if(reviewMap && reviewMarker){
       reviewMap.setView([currentDraft.lat, currentDraft.lng], 17);
@@ -849,8 +842,6 @@ function readDraftLocationData(){
     lat: currentDraft.lat,
     lng: currentDraft.lng,
     coordSource: currentDraft.coordSource || 'Manual',
-    accuracy: currentDraft.accuracy != null ? Number(currentDraft.accuracy) : null,
-    officerName: getOfficerName(),
     addressAuto: currentDraft.addressAuto || '',
     addressManual: document.getElementById('addrManual').value.trim() || currentDraft.addressAuto || '',
     note: document.getElementById('noteInput').value.trim(),
@@ -860,15 +851,6 @@ function readDraftLocationData(){
 
 let liveStream = null, liveRecorder = null, liveChunks = [], liveWatchId = null, liveGpsPollTimer = null;
 let liveGps = null, liveDrawFrame = null, liveRecordingStartedAt = 0, liveMapCrop = null, liveMapKey = '', liveAddress = '';
-let wakeLock = null;
-async function acquireWakeLock(){
-  try{ if('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); }
-  catch(e){ console.warn('Wake Lock tidak tersedia:', e.message); }
-}
-function releaseWakeLock(){
-  try{ if(wakeLock){ wakeLock.release(); wakeLock = null; } }
-  catch(e){ /* browser sudah melepas lock */ }
-}
 /* =====================================================================
    ORIENTASI VIDEO — SEKARANG PUNYA MODE OTOMATIS
    'auto'      : ikut posisi fisik HP (screen.orientation / window.orientation),
@@ -1359,7 +1341,6 @@ function closeLiveRecordModal(){
   bfClose('liveRecordModal');
 }
 function _viewCloseLiveRecordModal(){
-  releaseWakeLock();
   if(liveRecorder && liveRecorder.state !== 'inactive') liveRecorder.stop();
   if(liveWatchId != null && navigator.geolocation) navigator.geolocation.clearWatch(liveWatchId);
   liveWatchId = null;
@@ -1380,7 +1361,6 @@ function _viewCloseLiveRecordModal(){
   const toggle = document.getElementById('liveOrientToggle'); if(toggle) toggle.classList.remove('disabled');
 }
 async function openLiveRecordModal(){
-  await acquireWakeLock();
   const fallbackToDeviceCamera = () => {
     closeLiveRecordModal();
     showToast('Mode kamera live tidak tersedia — membuka kamera HP.');
@@ -1509,7 +1489,6 @@ async function startLiveRecording(){
   if(toggle) toggle.classList.add('disabled');
 }
 function stopLiveRecording(){
-  releaseWakeLock();
   if(liveRecorder && liveRecorder.state==='recording') liveRecorder.stop();
   liveStampLock = null;
 }
@@ -1558,8 +1537,7 @@ async function generateStampedVideo(entry){
     lat: entry.lat, lng: entry.lng,
     timestamp: entry.timestamp,
     mapCrop,
-    badge: 'Geotag GPS',
-    credit: entry.officerName ? `Petugas: ${entry.officerName}` : ''
+    badge: 'Geotag GPS'
   };
   // Mode stempel dikunci di frame pertama supaya template/warnanya tidak
   // berkedip-ganti di tengah video (mode OTOMATIS dievaluasi sekali saja).
@@ -1653,8 +1631,6 @@ async function doSaveDraftAndAdvance(data){
     businessName: data.businessName,
     lat: data.lat, lng: data.lng,
     coordSource: data.coordSource,
-    accuracy: data.accuracy != null ? Number(data.accuracy) : null,
-    officerName: getOfficerName(),
     addressAuto: data.addressAuto,
     addressManual: data.addressManual,
     note: data.note,
@@ -1780,7 +1756,6 @@ function initFirebase(){
     if(!FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey.indexOf('PASTE_') === 0) return; // belum diisi
     if(typeof firebase === 'undefined') return; // SDK gagal dimuat (mis. offline)
     firebase.initializeApp(FIREBASE_CONFIG);
-    if(typeof firebase.appCheck === 'function' && typeof FIREBASE_APPCHECK_SITE_KEY !== 'undefined' && FIREBASE_APPCHECK_SITE_KEY){ firebase.appCheck().activate(FIREBASE_APPCHECK_SITE_KEY, true); }
     firestoreDB = firebase.firestore();
     firebaseReady = true;
   }catch(e){
@@ -1798,10 +1773,6 @@ initFirebase();
 const PHOTO_COLLECTION = (typeof FIRESTORE_PHOTO_COLLECTION !== 'undefined') ? FIRESTORE_PHOTO_COLLECTION : 'geofoto_foto';
 const CLOUD_MID_SIDE = 1280;                 // sisi terpanjang foto "sedang" di cloud
 let cloudUid = null, cloudAuthPromise = null, lastSyncDenied = false;
-let cloudQuotaBlocked = false, cloudQuotaNoticeShown = false, isAdminUser = false;
-function getOfficerName(){ try{return (localStorage.getItem('geotagOfficerName')||'').trim();}catch(e){return '';} }
-function setOfficerName(v){ try{localStorage.setItem('geotagOfficerName', String(v||'').trim().slice(0,120));}catch(e){} }
-function isAdmin(){ return isAdminUser === true; }
 function ensureCloudAuth(){
   if(!firebaseReady || typeof firebase.auth !== 'function') return Promise.resolve(null);
   if(cloudUid) return Promise.resolve(cloudUid);
@@ -1811,7 +1782,7 @@ function ensureCloudAuth(){
     try{ auth = firebase.auth(); }catch(e){ resolve(null); return; }
     const unsub = auth.onAuthStateChanged(async (u) => {
       unsub();
-      if(u){ cloudUid = u.uid; isAdminUser = !u.isAnonymous && Array.isArray(ADMIN_EMAILS) && ADMIN_EMAILS.includes((u.email||'').toLowerCase()); updateAdminUi(); resolve(cloudUid); return; }
+      if(u){ cloudUid = u.uid; resolve(cloudUid); return; }
       try{
         const cred = await auth.signInAnonymously();
         cloudUid = cred.user.uid; resolve(cloudUid);
@@ -1821,18 +1792,6 @@ function ensureCloudAuth(){
   return cloudAuthPromise;
 }
 if(firebaseReady) ensureCloudAuth();
-
-async function adminLogin(){
-  if(!firebaseReady){showToast('Firebase belum aktif.');return;}
-  const email=(document.getElementById('adminEmailInput').value||'').trim().toLowerCase();
-  const password=document.getElementById('adminPasswordInput').value||'';
-  if(!email || !password){showToast('Isi email dan kata sandi admin.');return;}
-  try{ const cred=await firebase.auth().signInWithEmailAndPassword(email,password); cloudUid=cred.user.uid; isAdminUser=Array.isArray(ADMIN_EMAILS)&&ADMIN_EMAILS.includes(email); updateAdminUi(); showToast(isAdminUser?'Login admin berhasil.':'Login berhasil tetapi email ini bukan admin yang dikonfigurasi.'); }
-  catch(e){showToast('Login admin gagal: '+(e.code||'periksa email/kata sandi'));}
-}
-async function adminLogout(){ try{await firebase.auth().signOut(); cloudUid=null;isAdminUser=false;await ensureCloudAuth();updateAdminUi();}catch(e){console.warn(e);} }
-function updateAdminUi(){ const s=document.getElementById('adminStatus'), b=document.getElementById('btnAdminLogout'), l=document.getElementById('btnAdminLogin'); if(!s)return; s.textContent=isAdminUser?'Mode admin aktif: dapat memperbaiki/menghapus semua data sesuai Firestore Rules.':'Mode petugas: login anonim.'; if(b)b.style.display=isAdminUser?'inline-block':'none'; if(l)l.style.display=isAdminUser?'none':'inline-block'; }
-
 
 function blobToDataURL(blob){
   return new Promise((resolve, reject) => {
@@ -1848,7 +1807,7 @@ function blobToDataURL(blob){
 // untuk data hasil "Pulihkan dari Cloud", id lokal dan id dokumen cloud itu BEDA).
 // Mengembalikan true HANYA kalau benar-benar berhasil terkirim ke cloud.
 async function syncEntryToCloud(docId, entry){
-  if(!firebaseReady || cloudQuotaBlocked) return false;
+  if(!firebaseReady) return false;
   lastSyncDenied = false;
   try{
     const uid = await ensureCloudAuth();
@@ -1865,9 +1824,7 @@ async function syncEntryToCloud(docId, entry){
       // PENTING: sertakan mediaType supaya "Pulihkan dari Cloud"/"Sinkron
       // Ulang" di HP lain tahu ini video, bukan foto (lihat riwayat bug di
       // CHANGELOG lama: video sempat dikira foto biasa).
-      mediaType: entry.mediaType || 'photo',
-      officerName: entry.officerName || getOfficerName(),
-      accuracy: entry.accuracy == null ? null : Number(entry.accuracy)
+      mediaType: entry.mediaType || 'photo'
     };
     if(uid) data.ownerUid = uid;
     await firestoreDB.collection(FIRESTORE_COLLECTION).doc(String(docId)).set(data);
@@ -1877,11 +1834,7 @@ async function syncEntryToCloud(docId, entry){
     console.warn('Gagal sinkron ke cloud:', e);
     // Ditolak aturan cloud (mis. data milik petugas lain): tandai supaya tidak
     // dicoba ulang terus-menerus. Data tetap aman tersimpan di HP ini.
-    if(e && (e.code === 'resource-exhausted' || e.code === 'quota-exceeded' || e.code === 'failed-precondition')){
-      cloudQuotaBlocked = true;
-      if(!cloudQuotaNoticeShown){ cloudQuotaNoticeShown=true; showToast('⚠️ Kuota Firestore penuh/terlampaui. Sinkronisasi dihentikan; data tetap aman di HP. Periksa Firebase Console > Usage.'); }
-    }
-    if(e && e.code === 'permission-denied' && cloudUid && !isAdmin()){
+    if(e && e.code === 'permission-denied' && cloudUid){
       lastSyncDenied = true;
       if(entry.id != null){ try{ await updateEntry(entry.id, { cloudDenied:true }); }catch(_){} }
     }
@@ -1993,7 +1946,7 @@ async function syncCloudExtras(all){
 
 let cloudRetryRunning = false;
 async function retryPendingCloudSync(){
-  if(!firebaseReady || cloudQuotaBlocked || !navigator.onLine || cloudRetryRunning) return;
+  if(!firebaseReady || !navigator.onLine || cloudRetryRunning) return;
   cloudRetryRunning = true;
   try{
     const all = await getAllEntries();
@@ -2034,7 +1987,6 @@ async function retryPendingCloudSync(){
    ========================================================================== */
 let forceSyncRunning = false;
 async function forceResyncAll(){
-  if(cloudQuotaBlocked){ showToast('⚠️ Sinkronisasi dihentikan karena kuota Firestore penuh/terlampaui.'); return; }
   if(!firebaseReady){ showToast('Fitur cloud belum aktif (cek firebase-config.js).'); return; }
   if(!navigator.onLine){ showToast('Perlu koneksi internet untuk sinkron ulang.'); return; }
   if(forceSyncRunning) return;
@@ -2460,8 +2412,6 @@ async function restoreFromCloud(){
         businessName: d.businessName || '',
         lat: d.lat, lng: d.lng,
         coordSource: 'Dipulihkan dari cloud',
-        accuracy: d.accuracy == null ? null : Number(d.accuracy),
-        officerName: d.officerName || '',
         addressAuto: d.address || '',
         addressManual: d.address || '',
         note: d.note || '',
@@ -2724,8 +2674,7 @@ async function generateStampedPhoto(entry, opts){
     lat: entry.lat, lng: entry.lng,
     timestamp: entry.timestamp,
     mapCrop,
-    badge: 'Geotag GPS',
-    credit: entry.officerName ? `Petugas: ${entry.officerName}` : ''
+    badge: 'Geotag GPS'
   }, { fresh:true });
 
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', opts.quality || 0.98));
@@ -3168,7 +3117,7 @@ function buildExportWorkbook(entries, photoFolder, photoInfo, startIndex){
   startIndex = startIndex || 0;
   const headers = [
     'No','Kategori','Nama Usaha / Objek Pajak','Tanggal & Jam','Latitude','Longitude',
-    'Koordinat','Akurasi GPS (m)','Sumber Koordinat','Nama Petugas','Alamat Otomatis','Alamat Final','Catatan Lapangan',
+    'Koordinat','Sumber Koordinat','Alamat Otomatis','Alamat Final','Catatan Lapangan',
     'Nama File Foto','Buka Foto','Buka Peta'
   ];
   if(photoInfo) headers.push('Resolusi Foto (px)', 'Keterangan Foto');
@@ -3180,7 +3129,7 @@ function buildExportWorkbook(entries, photoFolder, photoInfo, startIndex){
     const photoName = exportPhotoFileName(en, startIndex + i);
     const row = [
       startIndex + i + 1, catLabel(en.category), en.businessName || '', fmtDate(en.timestamp), lat, lng,
-      coord, en.accuracy == null ? '' : Number(en.accuracy), en.coordSource || '', en.officerName || getOfficerName(), en.addressAuto || '', en.addressManual || en.addressAuto || '',
+      coord, en.coordSource || '', en.addressAuto || '', en.addressManual || en.addressAuto || '',
       en.note || '', photoName, 'Buka Foto', 'Buka Peta'
     ];
     if(photoInfo){ const inf = photoInfo[i] || {}; row.push(inf.res || '', inf.label || ''); }
@@ -3189,8 +3138,8 @@ function buildExportWorkbook(entries, photoFolder, photoInfo, startIndex){
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = [
-    {wch:4},{wch:20},{wch:26},{wch:20},{wch:13},{wch:13},{wch:13},{wch:23},{wch:24},
-    {wch:22},{wch:40},{wch:40},{wch:32},{wch:34},{wch:14},{wch:14}
+    {wch:4},{wch:20},{wch:26},{wch:20},{wch:13},{wch:13},{wch:23},{wch:24},
+    {wch:40},{wch:40},{wch:32},{wch:34},{wch:14},{wch:14}
   ];
   if(photoInfo) ws['!cols'].push({wch:18},{wch:60});
   for(let r = 2; r <= rows.length; r++){
@@ -3202,12 +3151,12 @@ function buildExportWorkbook(entries, photoFolder, photoInfo, startIndex){
     // Gunakan rumus HYPERLINK, bukan hanya metadata hyperlink. SheetJS
     // Community dan Microsoft Excel sama-sama membaca rumus ini secara
     // konsisten, termasuk tautan file lokal di dalam folder ZIP.
-    ws[`O${r}`] = {
+    ws[`M${r}`] = {
       t: 'str',
       f: `HYPERLINK("${photoTarget}","Buka Foto")`,
       v: 'Buka Foto'
     };
-    ws[`P${r}`] = {
+    ws[`N${r}`] = {
       t: 'str',
       f: `HYPERLINK("${mapTarget}","Buka Peta")`,
       v: 'Buka Peta'
@@ -3597,17 +3546,10 @@ window.addEventListener('DOMContentLoaded', () => {
   history.replaceState({ bfLayer: null }, '');
   history.pushState({ bfLayer: null }, '');
   renderMenu();
-  const oi=document.getElementById('officerNameInput'); if(oi){oi.value=getOfficerName();oi.addEventListener('input',e=>{setOfficerName(e.target.value);});}
-  updateAdminUi(); updateStorageStatus();
   retryPendingGeocodes();
   retryPendingCloudSync();
   purgeOldTrash();
 
-  document.getElementById('btnBackupLocal').addEventListener('click', backupLocal);
-  document.getElementById('btnRestoreLocal').addEventListener('click',()=>document.getElementById('inputRestoreLocal').click());
-  document.getElementById('inputRestoreLocal').addEventListener('change',e=>{if(e.target.files[0])restoreLocal(e.target.files[0]).catch(err=>showToast('Pemulihan gagal: '+err.message));});
-  document.getElementById('btnAdminLogin').addEventListener('click', adminLogin);
-  document.getElementById('btnAdminLogout').addEventListener('click', adminLogout);
   document.getElementById('btnCamera').addEventListener('click', () => document.getElementById('inputCamera').click());
   document.getElementById('btnVideo').addEventListener('click', openLiveRecordModal);
   document.getElementById('btnCloseLiveRecord').addEventListener('click', closeLiveRecordModal);
