@@ -120,6 +120,7 @@
   .review-photo,.review-video{width:100%;max-height:280px;object-fit:contain;border-radius:10px;background:#111;margin-bottom:10px;}
   .media-type-badge{display:inline-block;font-size:.7rem;font-weight:800;color:var(--navy);background:#fdf3dd;border:1px solid #ead7a8;border-radius:20px;padding:4px 9px;margin-bottom:8px;}
   .coord-box{display:flex;align-items:center;gap:8px;background:var(--paper);border-radius:9px;padding:9px 11px;font-size:.76rem;margin-bottom:10px;}
+  .heading-box{font-size:.78rem;font-weight:700;color:var(--navy);background:#eef1f6;border-radius:9px;padding:8px 10px;margin-bottom:8px;}
   .coord-box.warn{background:#fbf1de;color:var(--amber);}
   .coord-box.ok{background:#eaf3ee;color:var(--green);}
   .mini-map{height:210px;border-radius:10px;overflow:hidden;margin-bottom:10px;position:relative;border:1px solid var(--line);}
@@ -432,10 +433,31 @@
         <div id="reviewLoading" class="loading-inline" style="display:none;"><span class="spinner"></span><span id="reviewLoadingText">Memproses...</span></div>
         <div id="reviewContent" style="display:none;">
           <div class="field-group">
+            <label>Nama Kegiatan / Proyek</label>
+            <input type="text" id="projectInput" placeholder="Contoh: Pendataan Reklame Triwulan III 2026">
+          </div>
+          <div class="field-group">
             <label>Nama Usaha / Objek Pajak</label>
             <input type="text" id="businessNameInput" placeholder="Contoh: Hotel Grand Paser, Warung Bu Siti, dll">
           </div>
+          <div class="field-group">
+            <label>Jenis Foto</label>
+            <select id="photoTypeInput">
+              <option value="">— Pilih jenis foto (opsional) —</option>
+              <option>Tampak Depan</option>
+              <option>Tampak Samping</option>
+              <option>Detail / Close-up</option>
+              <option>Papan Nama / Plakat</option>
+              <option>Kondisi Lingkungan</option>
+              <option>Lainnya</option>
+            </select>
+          </div>
           <div class="coord-box" id="coordBox"></div>
+          <div class="heading-box" id="headingBox">🧭 Arah kamera: tidak terdeteksi (bisa diisi manual)</div>
+          <div class="coord-input-row" style="margin-bottom:10px;">
+            <input type="text" id="headingInput" inputmode="numeric" placeholder="Derajat 0-359, mis. 90">
+            <button type="button" id="btnDetectHeading" class="btn-apply-coord">🧭 Deteksi</button>
+          </div>
           <div class="field-group">
             <label>Koordinat Manual (ketik atau tempel dari Google Maps)</label>
             <div class="coord-input-row">
@@ -480,9 +502,11 @@
         <button class="tool-btn" id="btnForceSync">🔁 Sinkron Ulang</button>
         <button class="tool-btn" id="btnCleanDupes">🧹 Bersihkan Dobel</button>
         <button class="tool-btn" id="btnExportExcel">📊 Ekspor Excel</button>
+        <button class="tool-btn" id="btnExportCsv">📄 Ekspor CSV</button>
+        <button class="tool-btn" id="btnExportKml">🌐 Ekspor KMZ (Google Earth)</button>
         <button class="tool-btn" id="btnExportZip">🗜️ Ekspor Foto (ZIP)</button>
       </div>
-      <div class="hint" style="margin-bottom:14px;">☁️ "Pulihkan dari Cloud" mengambil data kategori ini dari Peta Pantau (termasuk yang diambil HP lain / hilang karena cache terhapus). "Sinkron Ulang" mengirim ULANG semua foto di HP ini ke Peta Pantau — pakai ini kalau ada foto yang sudah ada di "Daftar Data" tapi belum/tidak muncul di Peta Pantau. "Bersihkan Dobel" memeriksa data yang tersimpan dua kali (lokasi & jam sama), menyimpan yang memegang foto/video asli, dan memindahkan salinannya ke Sampah. Catatan: foto hasil pulihkan kualitasnya thumbnail (bukan resolusi asli), karena foto resolusi penuh hanya tersimpan di HP yang pertama kali mengambilnya.</div>
+      <div class="hint" style="margin-bottom:14px;">ℹ️ CSV cocok untuk Google Sheets/aplikasi lain; KMZ berisi titik + foto thumbnail untuk Google Earth/aplikasi GIS lapangan (foto resolusi penuh tetap lewat ZIP). ☁️ "Pulihkan dari Cloud" mengambil data kategori ini dari Peta Pantau (termasuk yang diambil HP lain / hilang karena cache terhapus). "Sinkron Ulang" mengirim ULANG semua foto di HP ini ke Peta Pantau — pakai ini kalau ada foto yang sudah ada di "Daftar Data" tapi belum/tidak muncul di Peta Pantau. "Bersihkan Dobel" memeriksa data yang tersimpan dua kali (lokasi & jam sama), menyimpan yang memegang foto/video asli, dan memindahkan salinannya ke Sampah. Catatan: foto hasil pulihkan kualitasnya thumbnail (bukan resolusi asli), karena foto resolusi penuh hanya tersimpan di HP yang pertama kali mengambilnya.</div>
       <div id="entryList"></div>
     </div>
 
@@ -501,7 +525,7 @@
     </div>
   </div>
 
-  <footer>Geotag GPS &middot; BAPENDA Kabupaten Paser &middot; Data foto tersimpan offline di perangkat masing-masing</footer>
+  <footer>Geotag GPS v51 &middot; BAPENDA Kabupaten Paser &middot; Data foto tersimpan offline di perangkat masing-masing<div id="storageInfo" style="margin-top:4px;"></div></footer>
 </div>
 
 <!-- Live video capture modal -->
@@ -589,8 +613,32 @@
   <div class="edit-box">
     <h3>✏️ Edit Data Foto</h3>
     <div class="field-group">
+      <label>Nama Kegiatan / Proyek</label>
+      <input type="text" id="editProjectInput" placeholder="Contoh: Pendataan Reklame Triwulan III 2026">
+    </div>
+    <div class="field-group">
       <label>Nama Usaha / Objek Pajak</label>
       <input type="text" id="editBusinessName" placeholder="Contoh: Hotel Grand Paser, Warung Bu Siti, dll">
+    </div>
+    <div class="field-group">
+      <label>Jenis Foto</label>
+      <select id="editPhotoTypeInput">
+        <option value="">— Pilih jenis foto (opsional) —</option>
+        <option>Tampak Depan</option>
+        <option>Tampak Samping</option>
+        <option>Detail / Close-up</option>
+        <option>Papan Nama / Plakat</option>
+        <option>Kondisi Lingkungan</option>
+        <option>Lainnya</option>
+      </select>
+    </div>
+    <div class="field-group">
+      <label>Arah Kamera (derajat 0-359, 0 = Utara)</label>
+      <div class="coord-input-row">
+        <input type="text" id="editHeadingInput" inputmode="numeric" placeholder="Mis. 90">
+        <button type="button" id="btnEditDetectHeading" class="btn-apply-coord">🧭 Deteksi</button>
+      </div>
+      <div class="coord-hint" id="editHeadingLabel">Belum ada arah</div>
     </div>
     <div class="field-group">
       <label>Koordinat Manual (ketik atau tempel dari Google Maps)</label>

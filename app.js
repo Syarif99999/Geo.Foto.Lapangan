@@ -244,6 +244,10 @@ function parseExifGPS(arrayBuffer){
               if(lngRef === 'W') lng = -lng;
               if(isFinite(lat) && isFinite(lng)){ result.lat = lat; result.lng = lng; }
             }
+            // v51 — arah kamera dari EXIF (GPSImgDirection), diisi kamera HP tertentu
+            // saat memotret (mis. dari sensor kompas bawaan kamera bawaan Android/iOS).
+            const dir = gpsIFD.tags[0x11];
+            if(typeof dir === 'number' && isFinite(dir)) result.heading = ((dir % 360) + 360) % 360;
           }
           return result;
         }
@@ -647,11 +651,16 @@ async function processQueueItem(){
   const orientation = (exif && exif.orientation) || 1;
   if(item.mediaType === 'video') {
     let lat = null, lng = null, coordSource = null;
+    let heading = null;
     if(item.source === 'camera') {
       try { const pos = await getCurrentPositionAsync(); lat=pos.coords.latitude; lng=pos.coords.longitude; coordSource=`GPS perangkat saat direkam (±${Math.round(pos.coords.accuracy)}m)`; } catch(e) {}
+      try { heading = await getCompassHeadingAsync(); } catch(e) {}
     }
     const poster = new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270"><rect width="100%" height="100%" fill="#0f2647"/><text x="50%" y="50%" fill="#e0b354" text-anchor="middle" dominant-baseline="middle" font-size="34">VIDEO</text></svg>`], {type:'image/svg+xml'});
-    currentDraft = { file:item.file, source:item.source, mediaType:'video', videoBlob:item.file, stampedVideoBlob:item.file.geoStamped ? item.file : null, photoBlob:null, thumbBlob:poster, lat, lng, coordSource, addressAuto:'', addressManual:'' };
+    currentDraft = { file:item.file, source:item.source, mediaType:'video', videoBlob:item.file, stampedVideoBlob:item.file.geoStamped ? item.file : null, photoBlob:null, thumbBlob:poster, lat, lng, coordSource, heading, addressAuto:'', addressManual:'' };
+    document.getElementById('projectInput').value = currentProjectName;
+    document.getElementById('photoTypeInput').value = '';
+    updateHeadingBox(heading);
     updateCoordBox(); initReviewMap(lat, lng); setReviewLoading(false);
     if(lat != null && lng != null) autoReverseGeocode(); else document.getElementById('addrAuto').placeholder='GPS tidak ditemukan — tandai lokasi di peta atau isi manual';
     return;
@@ -660,12 +669,14 @@ async function processQueueItem(){
   // Downscale/quality rendah di sini membuat foto yang dibagikan terlihat pecah,
   // terutama setelah WhatsApp melakukan kompresi tambahannya. Thumbnail tetap
   // dibuat terpisah karena hanya dipakai untuk daftar, peta, dan cloud publik.
-  const [photoBlob, thumbBlob] = await Promise.all([
+  const [photoBlob, thumbBlob, detectedHeading] = await Promise.all([
     compressImage(item.file, orientation, 4096, 0.98),
-    compressImage(item.file, orientation, 480, 0.85)
+    compressImage(item.file, orientation, 480, 0.85),
+    item.source === 'camera' ? getCompassHeadingAsync() : Promise.resolve(null)
   ]);
 
   let lat = null, lng = null, coordSource = null;
+  let heading = detectedHeading;
 
   if(item.source === 'camera'){
     try{
@@ -677,12 +688,13 @@ async function processQueueItem(){
     }
   } else {
     if(exif && exif.lat != null){ lat = exif.lat; lng = exif.lng; coordSource = 'EXIF Foto (Galeri/WA)'; }
+    if(exif && exif.heading != null) heading = exif.heading;   // v51: arah dari EXIF (foto impor)
   }
 
   currentDraft = {
     file: item.file, source: item.source, mediaType:'photo',
     photoBlob, thumbBlob,
-    lat, lng, coordSource,
+    lat, lng, coordSource, heading,
     addressAuto: '', addressManual: ''
   };
 
@@ -690,6 +702,9 @@ async function processQueueItem(){
   document.getElementById('addrManual').value = '';
   document.getElementById('noteInput').value = '';
   document.getElementById('businessNameInput').value = '';
+  document.getElementById('projectInput').value = currentProjectName;
+  document.getElementById('photoTypeInput').value = '';
+  updateHeadingBox(heading);
   updateCoordBox();
   initReviewMap(lat, lng);
   setReviewLoading(false);
@@ -705,6 +720,8 @@ async function processQueueItem(){
     document.getElementById('addrAuto').value = sharedLocationData.addressAuto;
     document.getElementById('addrManual').value = sharedLocationData.addressManual;
     document.getElementById('noteInput').value = sharedLocationData.note;
+    document.getElementById('projectInput').value = sharedLocationData.projectName || currentProjectName;
+    document.getElementById('photoTypeInput').value = sharedLocationData.photoType || '';
     updateCoordBox();
     setTimeout(() => saveDraftAndAdvance(sharedLocationData), 0);
     return;
@@ -717,6 +734,27 @@ async function processQueueItem(){
   }
 }
 
+function updateHeadingBox(deg){
+  const box = document.getElementById('headingBox');
+  if(!box) return;
+  box.textContent = (deg == null) ? '🧭 Arah kamera: tidak terdeteksi (bisa diisi manual)' : `🧭 Arah kamera: ${headingLabel(deg)}`;
+  const input = document.getElementById('headingInput');
+  if(input) input.value = deg == null ? '' : Math.round(deg);
+}
+async function onDetectHeadingClick(){
+  showToast('Membaca sensor arah, jangan gerakkan HP...');
+  const h = await getCompassHeadingAsync(1200);
+  if(currentDraft) currentDraft.heading = h;
+  updateHeadingBox(h);
+  showToast(h == null ? 'Sensor arah tidak tersedia di HP/browser ini.' : `Arah terdeteksi: ${headingLabel(h)}`);
+}
+function onHeadingInputChanged(){
+  const v = parseFloat(document.getElementById('headingInput').value);
+  const h = isFinite(v) ? ((v % 360) + 360) % 360 : null;
+  if(currentDraft) currentDraft.heading = h;
+  const box = document.getElementById('headingBox');
+  if(box) box.textContent = (h == null) ? '🧭 Arah kamera: tidak terdeteksi (bisa diisi manual)' : `🧭 Arah kamera: ${headingLabel(h)}`;
+}
 function updateCoordBox(){
   const box = document.getElementById('coordBox');
   if(currentDraft && currentDraft.lat != null){
@@ -845,7 +883,10 @@ function readDraftLocationData(){
     addressAuto: currentDraft.addressAuto || '',
     addressManual: document.getElementById('addrManual').value.trim() || currentDraft.addressAuto || '',
     note: document.getElementById('noteInput').value.trim(),
-    businessName: document.getElementById('businessNameInput').value.trim()
+    businessName: document.getElementById('businessNameInput').value.trim(),
+    projectName: document.getElementById('projectInput').value.trim(),
+    photoType: document.getElementById('photoTypeInput').value,
+    heading: currentDraft.heading != null ? currentDraft.heading : null
   };
 }
 
@@ -1065,6 +1106,55 @@ function shortenAddressForStamp(addr){
 
 // Penggambar stempel. ctx sudah berisi gambar/frame; fungsi ini hanya
 // menambahkan panel di bagian bawah.
+/* v51 — Arah kamera (kompas).
+   Dibaca dari sensor orientasi perangkat saat memotret dengan Kamera Langsung
+   (rata-rata melingkar dari beberapa sampel sesaat, supaya tidak salah dekat
+   0°/360°). Untuk foto impor dari galeri/WhatsApp, diambil dari EXIF
+   GPSImgDirection bila kameranya menuliskannya (lihat parseExifGPS). Boleh
+   dikosongkan atau dikoreksi manual di formulir. */
+const COMPASS_DIRS = ['Utara','Timur Laut','Timur','Tenggara','Selatan','Barat Daya','Barat','Barat Laut'];
+function degToCompass8(deg){
+  if(deg == null || !isFinite(deg)) return '';
+  const idx = Math.round(((deg % 360) + 360) % 360 / 45) % 8;
+  return COMPASS_DIRS[idx];
+}
+function headingLabel(deg){
+  if(deg == null || !isFinite(deg)) return '';
+  return `${degToCompass8(deg)} (${Math.round(deg)}°)`;
+}
+function getCompassHeadingAsync(timeoutMs){
+  timeoutMs = timeoutMs || 900;
+  return new Promise((resolve) => {
+    if(typeof DeviceOrientationEvent === 'undefined'){ resolve(null); return; }
+    const finish = () => {
+      if(typeof DeviceOrientationEvent.requestPermission !== 'function'){ startListening(); return; }
+      DeviceOrientationEvent.requestPermission().then((st) => { if(st === 'granted') startListening(); else resolve(null); }).catch(() => resolve(null));
+    };
+    let done = false, samples = [];
+    function handler(e){
+      let h = null;
+      if(typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;
+      else if(e.absolute === true && typeof e.alpha === 'number') h = 360 - e.alpha;   // alpha 0=Utara menghadap sensor ke atas -> arah lensa = kebalikannya
+      if(h != null && isFinite(h)) samples.push(((h % 360) + 360) % 360);
+    }
+    let evName = null;
+    function startListening(){
+      evName = ('ondeviceorientationabsolute' in window) ? 'deviceorientationabsolute' : 'deviceorientation';
+      window.addEventListener(evName, handler);
+      setTimeout(() => {
+        if(done) return; done = true;
+        if(evName) window.removeEventListener(evName, handler);
+        if(samples.length === 0){ resolve(null); return; }
+        let sx = 0, sy = 0;
+        samples.forEach(d => { const r = d * Math.PI / 180; sx += Math.cos(r); sy += Math.sin(r); });
+        let avg = Math.atan2(sy / samples.length, sx / samples.length) * 180 / Math.PI;
+        resolve(Math.round(((avg % 360) + 360) % 360));
+      }, timeoutMs);
+    }
+    finish();
+  });
+}
+
 function drawGeoStamp(ctx, W, H, data, options){
   options = options || {};
   const style = resolveStampStyle(ctx, W, H, data, options.mode || stampMode, options.theme, options.fresh);
@@ -1086,6 +1176,7 @@ function drawGeoStamp(ctx, W, H, data, options){
     ? `Lat ${Number(data.lat).toFixed(6)}°  Long ${Number(data.lng).toFixed(6)}°`
     : (data.coordFallback || 'GPS mencari lokasi...');
   const dateLine = data.dateText || formatStampDate(data.timestamp || Date.now());
+  const headingText = data.heading != null ? `🧭 ${headingLabel(data.heading)}` : '';
   const credit = data.credit || 'Geotag GPS · BAPENDA Paser';
 
   // Ukuran huruf sedikit dikecilkan dibanding v42 supaya panel tidak melar.
@@ -1120,6 +1211,7 @@ function drawGeoStamp(ctx, W, H, data, options){
   }
   rows.push({ text:coordLine, size:fsCoord, weight:'700', color:C.coord, mono:true, prio:0 });
   rows.push({ text:dateLine,  size:fsSmall, color:C.date, prio:0 });
+  if(headingText) rows.push({ text:headingText, size:fsSmall, color:C.date, prio:1 });
   if(template === 'lengkap' && note) rows.push({ text:note, size:fsSmall, color:C.sub, wrap:true, max:1, prio:4 });
   if(!compact) rows.push({ text:credit, size:fsSmall, color:C.credit, prio:5 });
 
@@ -1530,11 +1622,13 @@ async function generateStampedVideo(entry){
   const chunks = [];
   recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
   const stopped = new Promise((resolve, reject) => { recorder.onstop = resolve; recorder.onerror = e => reject(e.error || e); });
+  const videoTitle = [entry.businessName || '', entry.photoType || ''].filter(Boolean).join(' — ');
   const stampData = {
-    title: entry.businessName || deriveRegionTitle(entry.addressManual || entry.addressAuto || '') || catLabel(entry.category),
+    title: videoTitle || deriveRegionTitle(entry.addressManual || entry.addressAuto || '') || catLabel(entry.category),
     address: entry.addressManual || entry.addressAuto || '',
     note: entry.note || '',
     lat: entry.lat, lng: entry.lng,
+    heading: entry.heading,
     timestamp: entry.timestamp,
     mapCrop,
     badge: 'Geotag GPS'
@@ -1629,6 +1723,9 @@ async function doSaveDraftAndAdvance(data){
   const entry = {
     category: currentCategory,
     businessName: data.businessName,
+    projectName: data.projectName || '',
+    photoType: data.photoType || '',
+    heading: (data.heading != null && isFinite(data.heading)) ? data.heading : null,
     lat: data.lat, lng: data.lng,
     coordSource: data.coordSource,
     addressAuto: data.addressAuto,
@@ -1646,6 +1743,7 @@ async function doSaveDraftAndAdvance(data){
     // tandai entri ini supaya dicoba ulang otomatis begitu koneksi kembali ada.
     geocodePending: !currentDraft.addressAuto
   };
+  if(entry.projectName) setProjectName(entry.projectName);
   const localId = await addEntry(entry);
   // PENTING: nomor dokumen cloud diklaim dan ditulis ke entri lokal SEBELUM
   // diunggah. Dulu urutannya: simpan lokal → unggah → baru catat cloudDocId.
@@ -2657,7 +2755,7 @@ async function generateStampedPhoto(entry, opts){
   URL.revokeObjectURL(img.src);
 
   const address = entry.addressManual || entry.addressAuto || '';
-  const businessName = entry.businessName || '';
+  const businessTitle = [entry.businessName || '', entry.photoType || ''].filter(Boolean).join(' — ');
   const catText = catLabel(entry.category);
 
   // Peta untuk kotak kecil di kiri panel (mengikuti Tipe Peta yang dipilih).
@@ -2668,10 +2766,11 @@ async function generateStampedPhoto(entry, opts){
   // dari satu lokasi kelihatan satu gaya.
   resetStampAutoState();
   drawGeoStamp(ctx, W, H, {
-    title: businessName || deriveRegionTitle(address) || catText,
+    title: businessTitle || deriveRegionTitle(address) || catText,
     address: address || catText,
     note: entry.note || '',
     lat: entry.lat, lng: entry.lng,
+    heading: entry.heading,
     timestamp: entry.timestamp,
     mapCrop,
     badge: 'Geotag GPS'
@@ -2834,7 +2933,9 @@ async function renderList(){
       actionsHtml = `
         ${en.shareCount > 1 ? `<div class="entry-share-warn">⚠️ Sudah dikirim ${en.shareCount}x ke WA — cek jangan dobel</div>` : (en.shareCount === 1 ? `<div class="entry-share-ok">✅ Sudah dikirim ke WA</div>` : '')}
         ${en.geocodePending ? `<div class="entry-pending">⏳ Alamat otomatis menunggu koneksi internet</div>` : ''}
-        ${en.cloudSynced === false ? `<div class="entry-pending">☁️ Menunggu disinkron ke Peta Pantau</div>` : ''}
+        ${en.cloudDenied === true ? `<div class="entry-pending">🔒 Ditolak cloud (kemungkinan data milik petugas lain) — perubahan hanya tersimpan di HP ini</div>`
+          : (en.cloudSynced === false ? `<div class="entry-pending">☁️ Menunggu disinkron ke Peta Pantau</div>` : '')}
+        ${en.mediaType !== 'video' && en.cloudThumbOnly === true ? `<div class="entry-pending">🖼️ Foto kecil (thumbnail cloud) — akan diperbesar otomatis bila petugas pemotret sudah mengirim versi besarnya</div>` : ''}
         ${en.note ? `<div class="entry-note">"${escapeHtml(en.note)}"</div>` : ''}
         ${!batchMode ? `
         <div class="entry-actions">
@@ -2852,9 +2953,10 @@ async function renderList(){
         ? `<div class="entry-thumb" data-id="${en.id}" style="display:flex;align-items:center;justify-content:center;font-size:1.8rem;background:#0f2647;color:#e0b354">🎥</div>`
         : `<img class="entry-thumb" src="${thumbUrl}" data-id="${en.id}" alt="Foto objek">`}
       <div class="entry-body">
-        ${en.businessName ? `<div class="entry-business">${escapeHtml(en.businessName)}</div>` : ''}
+        ${en.businessName ? `<div class="entry-business">${escapeHtml(en.businessName)}${en.photoType ? ` &middot; ${escapeHtml(en.photoType)}` : ''}</div>` : (en.photoType ? `<div class="entry-business">${escapeHtml(en.photoType)}</div>` : '')}
         <div class="entry-addr">${escapeHtml(addr)}</div>
-        <div class="entry-meta">📍 ${en.lat.toFixed(5)}, ${en.lng.toFixed(5)} &middot; ${fmtDate(en.timestamp)}</div>
+        <div class="entry-meta">📍 ${en.lat.toFixed(5)}, ${en.lng.toFixed(5)} &middot; ${fmtDate(en.timestamp)}${en.heading != null ? ` &middot; 🧭 ${escapeHtml(headingLabel(en.heading))}` : ''}</div>
+        ${en.projectName ? `<div class="entry-meta">🏷️ ${escapeHtml(en.projectName)}</div>` : ''}
         ${actionsHtml}
       </div>
     `;
@@ -3028,9 +3130,28 @@ async function openEditOverlay(id){
   document.getElementById('editAddrAuto').value = en.addressAuto || '';
   document.getElementById('editAddrManual').value = en.addressManual || en.addressAuto || '';
   document.getElementById('editNote').value = en.note || '';
+  document.getElementById('editProjectInput').value = en.projectName || '';
+  document.getElementById('editPhotoTypeInput').value = en.photoType || '';
+  document.getElementById('editHeadingInput').value = en.heading != null ? Math.round(en.heading) : '';
+  updateEditHeadingLabel(en.heading);
   initEditMap(en.lat, en.lng, en.businessName);
   document.getElementById('editOverlay').classList.add('show');
   bfPush('editOverlay');
+}
+function updateEditHeadingLabel(deg){
+  const box = document.getElementById('editHeadingLabel');
+  if(box) box.textContent = deg == null ? 'Belum ada arah' : headingLabel(deg);
+}
+function onEditHeadingInputChanged(){
+  const v = parseFloat(document.getElementById('editHeadingInput').value);
+  updateEditHeadingLabel(isFinite(v) ? ((v % 360) + 360) % 360 : null);
+}
+async function onEditDetectHeadingClick(){
+  showToast('Membaca sensor arah, jangan gerakkan HP...');
+  const h = await getCompassHeadingAsync(1200);
+  document.getElementById('editHeadingInput').value = h == null ? '' : Math.round(h);
+  updateEditHeadingLabel(h);
+  showToast(h == null ? 'Sensor arah tidak tersedia di HP/browser ini.' : `Arah terdeteksi: ${headingLabel(h)}`);
 }
 function closeEditOverlay(){
   bfClose('editOverlay');
@@ -3044,11 +3165,17 @@ function _viewCloseEditOverlay(){
 async function saveEditOverlay(){
   if(editingId == null) return;
   const p = editMarker.getLatLng();
+  const hv = parseFloat(document.getElementById('editHeadingInput').value);
+  const projectName = document.getElementById('editProjectInput').value.trim();
+  if(projectName) setProjectName(projectName);
   await updateEntry(editingId, {
     lat: p.lat, lng: p.lng,
     businessName: document.getElementById('editBusinessName').value.trim(),
     addressManual: document.getElementById('editAddrManual').value.trim(),
-    note: document.getElementById('editNote').value.trim()
+    note: document.getElementById('editNote').value.trim(),
+    projectName,
+    photoType: document.getElementById('editPhotoTypeInput').value,
+    heading: isFinite(hv) ? ((hv % 360) + 360) % 360 : null
   });
   const fresh = await getEntry(editingId);
   // Pakai cloudDocId yang SUDAH ADA kalau ini data hasil pulihan dari cloud —
@@ -3073,6 +3200,17 @@ async function saveEditOverlay(){
    diperkecil saat ekspor. Kalau hasilnya tampak kecil, penyebabnya ada di foto
    sumbernya (thumbnail cloud 480 px, atau foto WhatsApp yang sudah terkompres),
    maka resolusi tiap foto kini dicatat di Excel + ringkasan setelah ekspor. */
+let currentProjectName = '';
+try{ currentProjectName = localStorage.getItem('geotagProjectName') || ''; }catch(e){}
+function setProjectName(v){
+  currentProjectName = String(v || '').trim();
+  try{ localStorage.setItem('geotagProjectName', currentProjectName); }catch(e){}
+}
+function slugPart(s){
+  return String(s || '').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-+|-+$)/g,'').slice(0,30);
+}
+const PHOTO_TYPES = ['Tampak Depan','Tampak Samping','Detail / Close-up','Papan Nama / Plakat','Kondisi Lingkungan','Lainnya'];
+
 let zipPlain = false;
 try{ zipPlain = localStorage.getItem('geotagZipPlain') === '1'; }catch(e){}
 function setZipPlain(on){
@@ -3106,19 +3244,28 @@ function photoSourceInfo(en, dims){
   return { res, label:'Asli' };
 }
 
+// v51 — nama file lebih deskriptif: nomor urut, kategori, (proyek), (nama
+// usaha), (jenis foto), lalu tanggal-jam. Bagian dalam kurung dilewati kalau
+// kosong. Dipakai konsisten di ekspor ZIP dan tautan foto di Excel/CSV/KML,
+// jadi satu foto punya SATU nama yang sama di semua berkas ekspor.
 function exportPhotoFileName(en, index){
   const dt = new Date(en.timestamp);
   const stamp = dt.toISOString().replace(/[:.]/g,'-');
   const ext = en.mediaType === 'video' ? ((en.mimeType || '').includes('mp4') ? 'mp4' : 'webm') : 'jpg';
-  return `${String(index + 1).padStart(3,'0')}_${currentCategory}_${stamp}.${ext}`;
+  const parts = [String(index + 1).padStart(3,'0'), currentCategory];
+  const proj = slugPart(en.projectName); if(proj) parts.push(proj);
+  const biz = slugPart(en.businessName); if(biz) parts.push(biz);
+  const typ = slugPart(en.photoType); if(typ) parts.push(typ);
+  parts.push(stamp);
+  return parts.join('_') + '.' + ext;
 }
 
 function buildExportWorkbook(entries, photoFolder, photoInfo, startIndex){
   startIndex = startIndex || 0;
   const headers = [
-    'No','Kategori','Nama Usaha / Objek Pajak','Tanggal & Jam','Latitude','Longitude',
-    'Koordinat','Sumber Koordinat','Alamat Otomatis','Alamat Final','Catatan Lapangan',
-    'Nama File Foto','Buka Foto','Buka Peta'
+    'No','Kategori','Nama Kegiatan/Proyek','Nama Usaha / Objek Pajak','Jenis Foto','Arah Kamera',
+    'Tanggal & Jam','Latitude','Longitude','Koordinat','Sumber Koordinat','Alamat Otomatis',
+    'Alamat Final','Catatan Lapangan','Nama File Foto','Buka Foto','Buka Peta'
   ];
   if(photoInfo) headers.push('Resolusi Foto (px)', 'Keterangan Foto');
   const rows = [headers];
@@ -3128,7 +3275,8 @@ function buildExportWorkbook(entries, photoFolder, photoInfo, startIndex){
     const coord = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
     const photoName = exportPhotoFileName(en, startIndex + i);
     const row = [
-      startIndex + i + 1, catLabel(en.category), en.businessName || '', fmtDate(en.timestamp), lat, lng,
+      startIndex + i + 1, catLabel(en.category), en.projectName || '', en.businessName || '', en.photoType || '',
+      en.heading != null ? headingLabel(en.heading) : '', fmtDate(en.timestamp), lat, lng,
       coord, en.coordSource || '', en.addressAuto || '', en.addressManual || en.addressAuto || '',
       en.note || '', photoName, 'Buka Foto', 'Buka Peta'
     ];
@@ -3138,10 +3286,11 @@ function buildExportWorkbook(entries, photoFolder, photoInfo, startIndex){
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = [
-    {wch:4},{wch:20},{wch:26},{wch:20},{wch:13},{wch:13},{wch:23},{wch:24},
+    {wch:4},{wch:20},{wch:20},{wch:26},{wch:20},{wch:16},{wch:20},{wch:13},{wch:13},{wch:23},{wch:24},
     {wch:40},{wch:40},{wch:32},{wch:34},{wch:14},{wch:14}
   ];
   if(photoInfo) ws['!cols'].push({wch:18},{wch:60});
+  const COL_PHOTO = 16, COL_MAP = 17;  // kolom "Buka Foto" & "Buka Peta" — geser 3 dari v50 (proyek, jenis, arah baru)
   for(let r = 2; r <= rows.length; r++){
     const entry = entries[r - 2];
     const photoName = exportPhotoFileName(entry, startIndex + r - 2);
@@ -3151,16 +3300,9 @@ function buildExportWorkbook(entries, photoFolder, photoInfo, startIndex){
     // Gunakan rumus HYPERLINK, bukan hanya metadata hyperlink. SheetJS
     // Community dan Microsoft Excel sama-sama membaca rumus ini secara
     // konsisten, termasuk tautan file lokal di dalam folder ZIP.
-    ws[`M${r}`] = {
-      t: 'str',
-      f: `HYPERLINK("${photoTarget}","Buka Foto")`,
-      v: 'Buka Foto'
-    };
-    ws[`N${r}`] = {
-      t: 'str',
-      f: `HYPERLINK("${mapTarget}","Buka Peta")`,
-      v: 'Buka Peta'
-    };
+    const colLetter = (n) => XLSX.utils.encode_col(n - 1);
+    ws[`${colLetter(COL_PHOTO)}${r}`] = { t:'str', f:`HYPERLINK("${photoTarget}","Buka Foto")`, v:'Buka Foto' };
+    ws[`${colLetter(COL_MAP)}${r}`] = { t:'str', f:`HYPERLINK("${mapTarget}","Buka Peta")`, v:'Buka Peta' };
   }
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Data Foto Lapangan');
@@ -3183,6 +3325,90 @@ async function exportExcel(){
   const dateSlug = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `GeotagGPS_${catSlug}_${dateSlug}.xlsx`);
   showToast('Excel berhasil diunduh. Tautan peta aktif; tautan foto tersedia dalam paket ZIP.');
+}
+
+/* v51 — Ekspor CSV.
+   Data tabel yang sama seperti Excel (tanpa rumus HYPERLINK — CSV tidak
+   mendukung rumus), untuk dibuka di Google Sheets/aplikasi lain. Diberi BOM
+   UTF-8 supaya huruf seperti "°" dan nama dengan tanda baca terbaca benar
+   di Excel Android/Ms Excel. */
+function csvEscape(v){
+  const s = String(v == null ? '' : v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+async function exportCsv(){
+  const entries = (await getEntriesByCategory(currentCategory)).sort((a,b) => a.timestamp - b.timestamp);
+  if(entries.length === 0){ showToast('Belum ada data untuk diekspor.'); return; }
+  const headers = [
+    'No','Kategori','Nama Kegiatan/Proyek','Nama Usaha / Objek Pajak','Jenis Foto','Arah Kamera',
+    'Tanggal & Jam','Latitude','Longitude','Sumber Koordinat','Alamat Otomatis','Alamat Final',
+    'Catatan Lapangan','Nama File Foto','Tautan Peta'
+  ];
+  const lines = [headers.map(csvEscape).join(',')];
+  entries.forEach((en, i) => {
+    const lat = Number(en.lat), lng = Number(en.lng);
+    const mapUrl = `https://www.google.com/maps?q=${encodeURIComponent(`${lat},${lng}`)}`;
+    lines.push([
+      i + 1, catLabel(en.category), en.projectName || '', en.businessName || '', en.photoType || '',
+      en.heading != null ? headingLabel(en.heading) : '', fmtDate(en.timestamp), lat.toFixed(6), lng.toFixed(6),
+      en.coordSource || '', en.addressAuto || '', en.addressManual || en.addressAuto || '',
+      en.note || '', exportPhotoFileName(en, i), mapUrl
+    ].map(csvEscape).join(','));
+  });
+  const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type:'text/csv;charset=utf-8' });
+  saveBlobAsFile(blob, `GeotagGPS_${currentCategory}_${new Date().toISOString().slice(0,10)}.csv`);
+  showToast('CSV berhasil diunduh. Foto tidak ikut di CSV — pakai Ekspor ZIP untuk foto.');
+}
+
+/* v51 — Ekspor KMZ (KML + thumbnail foto).
+   KMZ dipilih daripada KML polos supaya foto ikut tampil sebagai balon info
+   saat titik diklik di Google Earth / aplikasi GIS lapangan (Avenza, QField,
+   dll) — cara ini sama seperti Excel+ZIP: gambar dirujuk dengan path relatif
+   di dalam paket, bukan ditempel sebagai teks base64 raksasa. Memakai
+   thumbnail (≤480 px), BUKAN resolusi penuh, supaya ukuran KMZ tetap kecil
+   walau datanya ratusan titik; resolusi penuh tetap lewat Ekspor ZIP.
+   Belum diuji dibuka langsung di Google Earth/Avenza sungguhan — hanya
+   divalidasi strukturnya (KML valid, referensi file cocok). */
+function kmlEscape(s){
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+async function exportKml(){
+  const entries = (await getEntriesByCategory(currentCategory)).sort((a,b) => a.timestamp - b.timestamp);
+  if(entries.length === 0){ showToast('Belum ada data untuk diekspor.'); return; }
+  showToast('Menyiapkan KMZ, mohon tunggu...');
+  const zip = new JSZip();
+  const folder = zip.folder('files');
+  const placemarks = [];
+  for(let i = 0; i < entries.length; i++){
+    const en = entries[i];
+    const lat = Number(en.lat), lng = Number(en.lng);
+    if(!isFinite(lat) || !isFinite(lng)) continue;
+    const name = en.businessName || en.photoType || `${catLabel(en.category)} ${i + 1}`;
+    const imgName = `thumb_${String(i + 1).padStart(3,'0')}.jpg`;
+    let hasImg = false;
+    if(en.thumbBlob){ folder.file(imgName, en.thumbBlob); hasImg = true; }
+    const rows = [
+      ['Kategori', catLabel(en.category)],
+      ['Nama Kegiatan/Proyek', en.projectName || '-'],
+      ['Jenis Foto', en.photoType || '-'],
+      ['Arah Kamera', en.heading != null ? headingLabel(en.heading) : '-'],
+      ['Tanggal & Jam', fmtDate(en.timestamp)],
+      ['Alamat', en.addressManual || en.addressAuto || '-'],
+      ['Catatan', en.note || '-']
+    ];
+    const table = rows.map(([k,v]) => `<tr><td><b>${kmlEscape(k)}</b></td><td>${kmlEscape(v)}</td></tr>`).join('');
+    const desc = `<![CDATA[${hasImg ? `<img src="files/${imgName}" width="320"/><br/>` : ''}<table>${table}</table>]]>`;
+    placemarks.push(
+      `<Placemark><name>${kmlEscape(name)}</name><description>${desc}</description>` +
+      `<Point><coordinates>${lng},${lat},0</coordinates></Point></Placemark>`
+    );
+  }
+  const kml = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document>\n` +
+    `<name>${kmlEscape('GeotagGPS_' + currentCategory)}</name>\n${placemarks.join('\n')}\n</Document></kml>`;
+  zip.file('doc.kml', kml);
+  const blob = await zip.generateAsync({ type:'blob', compression:'DEFLATE' });
+  saveBlobAsFile(blob, `GeotagGPS_${currentCategory}_${new Date().toISOString().slice(0,10)}.kmz`);
+  showToast(`KMZ berhasil diunduh (${placemarks.length} titik). Foto di dalamnya thumbnail, bukan resolusi penuh.`);
 }
 
 /* v49 — Ekspor ZIP dibagi per bagian.
@@ -3612,6 +3838,11 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('inputImportVideo').addEventListener('change', (e) => { if(e.target.files.length) startQueue(e.target.files, 'import'); e.target.value=''; });
 
   document.getElementById('btnLocateNow').addEventListener('click', onLocateNowClick);
+  document.getElementById('btnDetectHeading').addEventListener('click', onDetectHeadingClick);
+  document.getElementById('headingInput').addEventListener('input', onHeadingInputChanged);
+  document.getElementById('btnEditDetectHeading').addEventListener('click', onEditDetectHeadingClick);
+  document.getElementById('editHeadingInput').addEventListener('input', onEditHeadingInputChanged);
+  document.getElementById('projectInput').addEventListener('change', (e) => setProjectName(e.target.value));
   document.getElementById('btnCleanDupes').addEventListener('click', cleanupDuplicates);
   document.getElementById('btnSaveQ').addEventListener('click', onSaveDraft);
   document.getElementById('btnSaveAllQ').addEventListener('click', onSaveAllDrafts);
@@ -3636,6 +3867,8 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btnExportExcel').addEventListener('click', exportExcel);
   document.getElementById('btnExportZip').addEventListener('click', exportZip);
+  document.getElementById('btnExportCsv').addEventListener('click', exportCsv);
+  document.getElementById('btnExportKml').addEventListener('click', exportKml);
   document.getElementById('btnRestoreCloud').addEventListener('click', restoreFromCloud);
   const btnForceSync = document.getElementById('btnForceSync');
   if(btnForceSync) btnForceSync.addEventListener('click', forceResyncAll);
@@ -3686,9 +3919,26 @@ setInterval(retryPendingCloudSync, 45000);
    JavaScript LAMA yang masih ada di memori walau file di server sudah
    baru dan service worker baru sudah aktif — inilah yang selama ini
    bikin perbaikan terasa "tidak kepakai" di HP. */
+/* v50 — info penyimpanan di footer: berapa yang terpakai & apakah sudah
+   berstatus "permanen" (tidak dihapus otomatis browser saat memori menipis). */
+async function updateStorageInfo(){
+  const el = document.getElementById('storageInfo');
+  if(!el || !navigator.storage || !navigator.storage.estimate) return;
+  try{
+    const est = await navigator.storage.estimate();
+    const persisted = navigator.storage.persisted ? await navigator.storage.persisted() : null;
+    const fmt = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1048576)) + ' MB';
+    let t = `Penyimpanan aplikasi: ${fmt(est.usage || 0)}` + (est.quota ? ` dari ±${fmt(est.quota)}` : '');
+    if(persisted === true) t += ' · permanen ✅';
+    else if(persisted === false) t += ' · belum permanen ⚠️ (ekspor ZIP berkala sebagai cadangan)';
+    el.textContent = t;
+  }catch(e){}
+}
 // v48: minta penyimpanan permanen supaya foto asli di HP (IndexedDB) tidak
 // dihapus otomatis oleh browser saat memori HP menipis.
-try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
+try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist().then(updateStorageInfo, updateStorageInfo); else updateStorageInfo(); }catch(e){}
+window.addEventListener('load', () => { updateStorageInfo(); });
+document.addEventListener('visibilitychange', () => { if(!document.hidden) updateStorageInfo(); });
 if('serviceWorker' in navigator){
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('sw.js').catch(err => console.error('SW gagal:', err));
