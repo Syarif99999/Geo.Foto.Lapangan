@@ -26,30 +26,12 @@ const FIREBASE_CONFIG = {
 // Nama koleksi Firestore tempat semua data foto lapangan disimpan untuk Peta Pantau publik.
 const FIRESTORE_COLLECTION = 'geofoto_entries';
 
+// Koleksi kedua: foto "sedang" (±1280 px, tanpa stempel) per entri. Dipisah dari
+// koleksi utama supaya Peta Pantau publik tidak ikut memuat foto besar. (v49)
+const FIRESTORE_PHOTO_COLLECTION = 'geofoto_foto';
+
 /* ==========================================================================
-   CONTOH FIRESTORE RULES (tempel di Firebase Console > Firestore > Rules):
-
-   rules_version = '2';
-   service cloud.firestore {
-     match /databases/{database}/documents {
-       match /geofoto_entries/{docId} {
-         allow read: if true;
-         allow create: if request.resource.data.keys().hasAll(['category','lat','lng','timestamp']);
-         allow update: if request.resource.data.keys().hasAll(['category','lat','lng','timestamp']);
-         allow delete: if true;
-       }
-     }
-   }
-
-   PENTING: create/update/delete dipisah sengaja — kalau digabung jadi satu
-   "allow write" dengan syarat field wajib, perintah DELETE akan selalu
-   ditolak Firestore (karena saat hapus, request.resource bernilai null,
-   jadi pengecekan field pasti gagal). Ini pernah jadi penyebab data yang
-   sudah dihapus di HP tetap muncul lagi lewat "Pulihkan dari Cloud".
-
-   Catatan: rule di atas mengizinkan siapa saja MEMBACA (untuk Peta Pantau
-   publik), MENULIS data baru/ubah data (asal field wajib lengkap), dan
-   MENGHAPUS bebas. Ini cukup untuk aplikasi internal skala kecil. Kalau
-   nanti butuh lebih ketat (misal hanya HP petugas yang boleh menulis),
-   bisa ditambahkan App Check atau autentikasi.
+   FIRESTORE RULES: lihat berkas FIRESTORE_RULES.txt (TAHAP 1 lalu TAHAP 2).
+   Aturan lama (semua orang bebas baca/tulis/HAPUS) tidak dianjurkan lagi —
+   pemilik data kini ditandai dengan ownerUid (login anonim otomatis).
    ========================================================================== */

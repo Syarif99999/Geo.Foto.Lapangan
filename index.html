@@ -269,7 +269,8 @@
   }
 
   /* ===== TIPE PETA & BAGIKAN BANYAK (v47) ===== */
-  #mapTypeOverlay,#shareSheet{z-index:3800;}
+  #mapTypeOverlay,#shareSheet,#zipSheet{z-index:3800;}
+  .share-part-btn:disabled{opacity:.5;cursor:default;}
   .maptype-box{width:100%;max-width:460px;border-radius:14px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,.4);}
   .maptype-head{background:#22b04a;color:#fff;display:flex;align-items:center;gap:12px;padding:11px 14px;font-weight:800;font-size:1.05rem;}
   .maptype-head button{background:none;border:0;color:#fff;font-size:1.5rem;line-height:1;cursor:pointer;padding:0 6px;}
@@ -407,6 +408,12 @@
           <button type="button" data-shareq="seimbang">Seimbang</button>
           <button type="button" data-shareq="hd">HD Asli</button>
         </div>
+        <label style="margin-top:12px;">🗜️ Isi Ekspor Foto (ZIP)</label>
+        <div class="stamp-size-toggle" id="zipPlainToggle">
+          <button type="button" data-zipplain="off" class="active">Berstempel saja</button>
+          <button type="button" data-zipplain="on">+ Foto asli polos</button>
+        </div>
+        <div class="hint">🗜️ Foto di ZIP selalu memakai <b>resolusi tersimpan</b> (maks 4096 px), tidak diperkecil. <b>+ Foto asli polos</b> menambah folder berisi foto yang sama tanpa stempel (ZIP jadi ±2× lebih besar). Kolom <b>Resolusi Foto</b> di Excel menunjukkan foto mana yang memang kecil (thumbnail cloud / WhatsApp).</div>
         <div class="hint">📤 <b>WhatsApp</b> (bawaan, ±1600 px) menyiapkan foto pada ukuran yang pas dengan pengecilan bertahap + penajaman, dan stempel digambar sesudahnya — jadi tulisan tetap tajam walau WhatsApp menekan ulang. <b>Seimbang</b> ±2560 px. <b>HD Asli</b> mengirim ukuran penuh (file besar): di layar WhatsApp sebelum kirim, ketuk ikon <b>HD</b> supaya WhatsApp tidak mengecilkannya.</div>
         <div class="hint">🔠 <b>Besar</b> adalah bawaan, dipilih supaya tulisan tetap terbaca oleh pembaca lanjut usia dan saat foto dilihat kecil di WhatsApp. <b>Jumbo</b> untuk kebutuhan cetak laporan. Panel otomatis menyesuaikan tingginya, dan kalau tetap tidak muat, kredit dan catatan dikorbankan lebih dulu — koordinat dan tanggal tidak pernah dibuang.</div>
         <div class="hint">🤖 <b>Otomatis</b>: aplikasi memilih sendiri — potret/lanskap, lengkap/ringkas, panel gelap atau terang mengikuti terang-gelapnya bagian bawah gambar, supaya tulisan selalu terbaca. Pilihan ini dipakai untuk foto tersimpan maupun rekaman video, dan diingat sampai diganti.</div>
@@ -550,6 +557,16 @@
   </div>
 </div>
 
+<!-- Ekspor ZIP per bagian -->
+<div class="overlay" id="zipSheet">
+  <div class="edit-box">
+    <h3>🗜️ Ekspor Foto (ZIP)</h3>
+    <div class="hint" id="zipSheetInfo" style="margin-bottom:12px;"></div>
+    <div id="zipSheetButtons"></div>
+    <button type="button" class="mini-act" id="btnZipSheetClose" style="width:100%;padding:10px;">Tutup</button>
+  </div>
+</div>
+
 <!-- Bagikan banyak foto -->
 <div class="overlay" id="shareSheet">
   <div class="edit-box">
@@ -609,6 +626,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
 

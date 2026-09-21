@@ -1765,6 +1765,34 @@ function initFirebase(){
 }
 initFirebase();
 
+/* v49 — Login anonim + koleksi foto sedang.
+   Data di cloud kini punya PEMILIK (ownerUid = ID login anonim HP ini).
+   Aturan Firestore (lihat FIRESTORE_RULES.txt) hanya mengizinkan pemilik
+   mengubah/menghapus datanya. Kalau login anonim belum diaktifkan di Firebase,
+   aplikasi tetap jalan seperti sebelumnya (tanpa ownerUid). */
+const PHOTO_COLLECTION = (typeof FIRESTORE_PHOTO_COLLECTION !== 'undefined') ? FIRESTORE_PHOTO_COLLECTION : 'geofoto_foto';
+const CLOUD_MID_SIDE = 1280;                 // sisi terpanjang foto "sedang" di cloud
+let cloudUid = null, cloudAuthPromise = null, lastSyncDenied = false;
+function ensureCloudAuth(){
+  if(!firebaseReady || typeof firebase.auth !== 'function') return Promise.resolve(null);
+  if(cloudUid) return Promise.resolve(cloudUid);
+  if(cloudAuthPromise) return cloudAuthPromise;
+  cloudAuthPromise = new Promise((resolve) => {
+    let auth;
+    try{ auth = firebase.auth(); }catch(e){ resolve(null); return; }
+    const unsub = auth.onAuthStateChanged(async (u) => {
+      unsub();
+      if(u){ cloudUid = u.uid; resolve(cloudUid); return; }
+      try{
+        const cred = await auth.signInAnonymously();
+        cloudUid = cred.user.uid; resolve(cloudUid);
+      }catch(e){ console.warn('Login anonim gagal (aktifkan Anonymous di Firebase Authentication):', e); resolve(null); }
+    });
+  }).then((uid) => { cloudAuthPromise = null; return uid; });
+  return cloudAuthPromise;
+}
+if(firebaseReady) ensureCloudAuth();
+
 function blobToDataURL(blob){
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1780,9 +1808,11 @@ function blobToDataURL(blob){
 // Mengembalikan true HANYA kalau benar-benar berhasil terkirim ke cloud.
 async function syncEntryToCloud(docId, entry){
   if(!firebaseReady) return false;
+  lastSyncDenied = false;
   try{
+    const uid = await ensureCloudAuth();
     const thumbDataUrl = await blobToDataURL(entry.thumbBlob);
-    await firestoreDB.collection(FIRESTORE_COLLECTION).doc(String(docId)).set({
+    const data = {
       category: entry.category,
       businessName: entry.businessName || '',
       lat: entry.lat,
@@ -1792,24 +1822,126 @@ async function syncEntryToCloud(docId, entry){
       timestamp: entry.timestamp,
       thumbDataUrl: thumbDataUrl,
       // PENTING: sertakan mediaType supaya "Pulihkan dari Cloud"/"Sinkron
-      // Ulang" di HP lain tahu ini video, bukan foto. Sebelumnya field ini
-      // tidak pernah dikirim, sehingga entri video yang dipulihkan dari
-      // cloud selalu dikira foto — thumbnail placeholder "VIDEO" ikut
-      // tampil seolah itu fotonya, dan tombol Bagikan jadi rusak karena
-      // tidak ada video sungguhan yang bisa dibagikan.
+      // Ulang" di HP lain tahu ini video, bukan foto (lihat riwayat bug di
+      // CHANGELOG lama: video sempat dikira foto biasa).
       mediaType: entry.mediaType || 'photo'
-    });
+    };
+    if(uid) data.ownerUid = uid;
+    await firestoreDB.collection(FIRESTORE_COLLECTION).doc(String(docId)).set(data);
+    if(entry.cloudDenied === true && entry.id != null){ updateEntry(entry.id, { cloudDenied:false }).catch(() => {}); }
     return true;
   }catch(e){
     console.warn('Gagal sinkron ke cloud:', e);
+    // Ditolak aturan cloud (mis. data milik petugas lain): tandai supaya tidak
+    // dicoba ulang terus-menerus. Data tetap aman tersimpan di HP ini.
+    if(e && e.code === 'permission-denied' && cloudUid){
+      lastSyncDenied = true;
+      if(entry.id != null){ try{ await updateEntry(entry.id, { cloudDenied:true }); }catch(_){} }
+    }
     return false;
   }
 }
 
 async function deleteEntryFromCloud(docId){
   if(!firebaseReady) return;
+  try{ await ensureCloudAuth(); }catch(e){}
   try{ await firestoreDB.collection(FIRESTORE_COLLECTION).doc(String(docId)).delete(); }
   catch(e){ console.warn('Gagal hapus dari cloud:', e); }
+  // foto sedang milik entri ini ikut dihapus (abaikan kalau memang tidak ada)
+  try{ await firestoreDB.collection(PHOTO_COLLECTION).doc(String(docId)).delete(); }
+  catch(e){ /* tidak ada / bukan milik kita */ }
+}
+
+/* Foto "sedang" (±1280 px, tanpa stempel) disimpan di koleksi terpisah supaya
+   Peta Pantau (yang membaca koleksi utama) tidak ikut berat. Dipakai HP lain
+   untuk memulihkan foto yang lebih besar dari thumbnail 480 px. */
+async function makeMidPhotoDataUrl(blob){
+  const bmp = await createImageBitmap(blob);
+  try{
+    const scale = Math.min(1, CLOUD_MID_SIDE / Math.max(bmp.width, bmp.height));
+    const W = Math.max(1, Math.round(bmp.width * scale)), H = Math.max(1, Math.round(bmp.height * scale));
+    let canvas;
+    if(scale < 1){ canvas = resizeCanvasHQ(bmp, W, H); sharpenCanvas(canvas, 0.2); }
+    else{ canvas = document.createElement('canvas'); canvas.width = W; canvas.height = H; canvas.getContext('2d').drawImage(bmp, 0, 0); }
+    // Satu dokumen Firestore maks 1 MB -> turunkan kualitas bertahap sampai muat.
+    for(const q of [0.78, 0.68, 0.58, 0.48, 0.40]){
+      const out = await new Promise(r => canvas.toBlob(r, 'image/jpeg', q));
+      if(!out) continue;
+      const url = await blobToDataURL(out);
+      if(url.length < 850000) return url;
+    }
+    return null;
+  } finally { if(bmp.close) bmp.close(); }
+}
+async function uploadMidPhoto(docId, entry, uid){
+  try{
+    const dataUrl = await makeMidPhotoDataUrl(entry.photoBlob);
+    if(!dataUrl) return false;
+    await firestoreDB.collection(PHOTO_COLLECTION).doc(String(docId)).set({
+      dataUrl, ownerUid: uid, timestamp: entry.timestamp || Date.now()
+    });
+    return true;
+  }catch(e){ console.warn('Gagal kirim foto sedang ke cloud:', e); return false; }
+}
+
+/* Pekerjaan latar tiap siklus sinkron (lihat retryPendingCloudSync):
+   1) klaim kepemilikan data lama + kirim foto sedang milik HP ini (maks 4/siklus)
+   2) tarik foto sedang untuk entri yang baru berupa thumbnail (maks 6/siklus) */
+let cloudExtrasRunning = false;
+async function syncCloudExtras(all){
+  if(!firebaseReady || !navigator.onLine || cloudExtrasRunning) return;
+  cloudExtrasRunning = true;
+  try{
+    const uid = await ensureCloudAuth();
+    if(!uid) return;
+    const now = Date.now();
+    const mine = all.filter(en => en.deleted !== true && en.cloudSynced === true && en.cloudDenied !== true
+      && en.mediaType !== 'video' && en.photoBlob && en.cloudThumbOnly !== true && en.cloudMid !== true
+      && !(en.cloudMidSynced === true && en.cloudOwnerUid === uid)
+      && (!en.cloudMidTry || now - en.cloudMidTry > 30 * 60 * 1000)).slice(0, 4);
+    for(const en of mine){
+      if(!navigator.onLine) break;
+      const docId = getStableCloudDocId(en);
+      try{
+        if(en.cloudOwnerUid !== uid){
+          await firestoreDB.collection(FIRESTORE_COLLECTION).doc(docId).update({ ownerUid: uid });
+        }
+      }catch(e){
+        if(e && e.code === 'not-found'){ await updateEntry(en.id, { cloudSynced:false }); }
+        else if(e && e.code === 'permission-denied'){ await updateEntry(en.id, { cloudDenied:true }); }
+        continue;
+      }
+      const ok = await uploadMidPhoto(docId, en, uid);
+      await updateEntry(en.id, ok ? { cloudOwnerUid: uid, cloudMidSynced:true } : { cloudOwnerUid: uid, cloudMidTry: now });
+    }
+
+    const thumbs = all.filter(en => en.deleted !== true && en.cloudThumbOnly === true && en.mediaType !== 'video'
+      && en.cloudDocId && (!en.cloudMidChecked || now - en.cloudMidChecked > 6 * 3600 * 1000)).slice(0, 6);
+    let upgraded = 0;
+    for(const en of thumbs){
+      if(!navigator.onLine) break;
+      try{
+        const snap = await firestoreDB.collection(PHOTO_COLLECTION).doc(String(en.cloudDocId)).get();
+        if(snap.exists && snap.data() && snap.data().dataUrl){
+          await updateEntry(en.id, { photoBlob: dataURLToBlob(snap.data().dataUrl), cloudThumbOnly:false, cloudMid:true, cloudMidChecked: now });
+          upgraded++;
+        }else{
+          await updateEntry(en.id, { cloudMidChecked: now });
+        }
+      }catch(e){
+        console.warn('Gagal menarik foto sedang:', e);
+        try{ await updateEntry(en.id, { cloudMidChecked: now }); }catch(_){}
+      }
+    }
+    if(upgraded > 0){
+      showToast(`☁️ ${upgraded} foto diperbesar dari cloud (±${CLOUD_MID_SIDE} px).`);
+      if(currentCategory && currentTab === 'list') renderList();
+    }
+  }catch(e){
+    console.warn('Pekerjaan latar cloud gagal:', e);
+  }finally{
+    cloudExtrasRunning = false;
+  }
 }
 
 let cloudRetryRunning = false;
@@ -1822,8 +1954,7 @@ async function retryPendingCloudSync(){
     // diaktifkan sekalipun (field-nya belum pernah ada sama sekali).
     // en.deleted !== true supaya foto yang sudah dipindah ke Sampah TIDAK
     // ikut terkirim ke Peta Pantau publik.
-    const pending = all.filter(en => en.cloudSynced !== true && en.deleted !== true);
-    if(pending.length === 0) return;
+    const pending = all.filter(en => en.cloudSynced !== true && en.deleted !== true && en.cloudDenied !== true);
     let ok = 0;
     for(const en of pending){
       if(!navigator.onLine) break;
@@ -1840,6 +1971,7 @@ async function retryPendingCloudSync(){
         if(currentTab === 'list') renderList();
       }
     }
+    await syncCloudExtras(all);
   } finally {
     cloudRetryRunning = false;
   }
@@ -1864,7 +1996,7 @@ async function forceResyncAll(){
   if(btn){ btn.disabled = true; btn.textContent = '🔁 Menyinkron ulang...'; }
   try{
     const all = await getAllEntries();
-    const toSync = all.filter(en => en.deleted !== true);
+    const toSync = all.filter(en => en.deleted !== true && en.cloudDenied !== true);
     let ok = 0, fail = 0;
     for(const en of toSync){
       if(!navigator.onLine) break;
@@ -2189,7 +2321,7 @@ function startCategoryCloudSync(catId){
 function nilaiKelengkapan(en){
   let n = 0;
   if(en.mediaType === 'video' ? en.videoBlob : en.photoBlob) n += 4; // punya file asli
-  if(!en.cloudThumbOnly) n += 2;
+  if(!en.cloudThumbOnly && !en.cloudMid) n += 2;
   if(en.businessName) n += 1;
   return n;
 }
@@ -2490,6 +2622,7 @@ function setShareQuality(q){
 function shareRenderOptions(){ return SHARE_QUALITY[shareQuality]; }
 
 let lastStampLowRes = false;
+let lastStampSrc = null;
 async function generateStampedPhoto(entry, opts){
   opts = opts || {};
   const img = await new Promise((resolve, reject) => {
@@ -2504,6 +2637,7 @@ async function generateStampedPhoto(entry, opts){
   const srcH = img.naturalHeight || img.height;
   // Foto hasil "Pulihkan dari Cloud" hanya thumbnail -> pasti tampak pecah.
   lastStampLowRes = Math.max(srcW, srcH) < 900;
+  lastStampSrc = { w: srcW, h: srcH };   // v48: dipakai laporan resolusi saat ekspor
   const scale = opts.maxSide ? Math.min(1, opts.maxSide / Math.max(srcW, srcH)) : 1;
   const W = Math.max(2, Math.round(srcW * scale));
   const H = Math.max(2, Math.round(srcH * scale));
@@ -2924,7 +3058,9 @@ async function saveEditOverlay(){
   const changes = { cloudSynced: synced };
   if(synced) changes.cloudDocId = docId;
   await updateEntry(editingId, changes);
-  showToast('Perubahan disimpan.');
+  showToast(!synced && lastSyncDenied
+    ? 'Perubahan tersimpan di HP ini, tetapi ditolak cloud (data ini kemungkinan milik petugas lain).'
+    : 'Perubahan disimpan.');
   closeEditOverlay();
   renderList();
 }
@@ -2932,6 +3068,44 @@ async function saveEditOverlay(){
 /* ==========================================================================
    EKSPOR EXCEL & ZIP
    ========================================================================== */
+/* v48 — Setelan isi ZIP + pelaporan resolusi foto.
+   Foto di ZIP selalu memakai resolusi TERSIMPAN (maks 4096 px) — tidak pernah
+   diperkecil saat ekspor. Kalau hasilnya tampak kecil, penyebabnya ada di foto
+   sumbernya (thumbnail cloud 480 px, atau foto WhatsApp yang sudah terkompres),
+   maka resolusi tiap foto kini dicatat di Excel + ringkasan setelah ekspor. */
+let zipPlain = false;
+try{ zipPlain = localStorage.getItem('geotagZipPlain') === '1'; }catch(e){}
+function setZipPlain(on){
+  zipPlain = !!on;
+  try{ localStorage.setItem('geotagZipPlain', zipPlain ? '1' : '0'); }catch(e){}
+  document.querySelectorAll('[data-zipplain]').forEach(btn => {
+    btn.classList.toggle('active', (btn.dataset.zipplain === 'on') === zipPlain);
+  });
+}
+async function measureBlobPx(blob){
+  try{
+    const bmp = await createImageBitmap(blob);
+    const r = { w: bmp.width, h: bmp.height };
+    if(bmp.close) bmp.close();
+    return r;
+  }catch(e){ return { w:0, h:0 }; }
+}
+function photoSourceInfo(en, dims){
+  if(en.mediaType === 'video') return { res:'-', label:'Video' };
+  const side = dims ? Math.max(dims.w, dims.h) : 0;
+  const res = side > 0 ? `${dims.w}×${dims.h}` : 'tidak terbaca';
+  if(en.cloudMid === true){
+    return { res, label:'Sedang — salinan cloud ±1280 px (foto asli penuh ada di HP pemotret)' };
+  }
+  if(en.cloudThumbOnly === true || (side > 0 && side <= 640)){
+    return { res, label:'KECIL — thumbnail dari cloud (foto asli hanya ada di HP pertama yang memotret)', small:true };
+  }
+  if(side > 0 && side < 1700){
+    return { res, label:'Resolusi rendah — kemungkinan foto dari WhatsApp/galeri yang sudah terkompres', small:true };
+  }
+  return { res, label:'Asli' };
+}
+
 function exportPhotoFileName(en, index){
   const dt = new Date(en.timestamp);
   const stamp = dt.toISOString().replace(/[:.]/g,'-');
@@ -2939,23 +3113,27 @@ function exportPhotoFileName(en, index){
   return `${String(index + 1).padStart(3,'0')}_${currentCategory}_${stamp}.${ext}`;
 }
 
-function buildExportWorkbook(entries, photoFolder){
+function buildExportWorkbook(entries, photoFolder, photoInfo, startIndex){
+  startIndex = startIndex || 0;
   const headers = [
     'No','Kategori','Nama Usaha / Objek Pajak','Tanggal & Jam','Latitude','Longitude',
     'Koordinat','Sumber Koordinat','Alamat Otomatis','Alamat Final','Catatan Lapangan',
     'Nama File Foto','Buka Foto','Buka Peta'
   ];
+  if(photoInfo) headers.push('Resolusi Foto (px)', 'Keterangan Foto');
   const rows = [headers];
   entries.forEach((en, i) => {
     const lat = Number(en.lat);
     const lng = Number(en.lng);
     const coord = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
-    const photoName = exportPhotoFileName(en, i);
-    rows.push([
-      i + 1, catLabel(en.category), en.businessName || '', fmtDate(en.timestamp), lat, lng,
+    const photoName = exportPhotoFileName(en, startIndex + i);
+    const row = [
+      startIndex + i + 1, catLabel(en.category), en.businessName || '', fmtDate(en.timestamp), lat, lng,
       coord, en.coordSource || '', en.addressAuto || '', en.addressManual || en.addressAuto || '',
       en.note || '', photoName, 'Buka Foto', 'Buka Peta'
-    ]);
+    ];
+    if(photoInfo){ const inf = photoInfo[i] || {}; row.push(inf.res || '', inf.label || ''); }
+    rows.push(row);
   });
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
@@ -2963,9 +3141,10 @@ function buildExportWorkbook(entries, photoFolder){
     {wch:4},{wch:20},{wch:26},{wch:20},{wch:13},{wch:13},{wch:23},{wch:24},
     {wch:40},{wch:40},{wch:32},{wch:34},{wch:14},{wch:14}
   ];
+  if(photoInfo) ws['!cols'].push({wch:18},{wch:60});
   for(let r = 2; r <= rows.length; r++){
     const entry = entries[r - 2];
-    const photoName = exportPhotoFileName(entry, r - 2);
+    const photoName = exportPhotoFileName(entry, startIndex + r - 2);
     const lat = Number(entry.lat), lng = Number(entry.lng);
     const photoTarget = `./${photoFolder}/${photoName}`;
     const mapTarget = `https://www.google.com/maps?q=${encodeURIComponent(`${lat},${lng}`)}`;
@@ -3006,48 +3185,197 @@ async function exportExcel(){
   showToast('Excel berhasil diunduh. Tautan peta aktif; tautan foto tersedia dalam paket ZIP.');
 }
 
-async function exportZip(){
-  const entries = (await getEntriesByCategory(currentCategory)).sort((a,b) => a.timestamp - b.timestamp);
-  if(entries.length === 0){ showToast('Belum ada data untuk diekspor.'); return; }
-  showToast('Menyiapkan paket ZIP lengkap, mohon tunggu...');
+/* v49 — Ekspor ZIP dibagi per bagian.
+   Seluruh ZIP dibangun di memori HP; ratusan foto 4K (apalagi video) bisa
+   membuat Android kehabisan memori dan browser menutup sendiri. Karena itu
+   ekspor dipecah: maksimal ZIP_PART_MAX_COUNT file ATAU ±ZIP_PART_MAX_BYTES
+   per bagian. Tiap bagian berdiri sendiri (punya Excel + folder foto sendiri;
+   nama file foto tetap unik lintas bagian, jadi semua bagian bisa diekstrak
+   ke folder yang sama). Kalau cukup satu bagian, perilakunya sama seperti
+   sebelumnya: langsung diunduh. */
+let ZIP_PART_MAX_COUNT = 40;
+let ZIP_PART_MAX_BYTES = 120 * 1024 * 1024;
+let zipPlan = null;
 
+function estimateExportBytes(en){
+  if(en.mediaType === 'video') return (en.videoBlob || en.thumbBlob || { size:0 }).size || 0;
+  return ((en.photoBlob || en.thumbBlob || { size:0 }).size || 0) * (zipPlain ? 2.2 : 1.2);
+}
+function planZipParts(entries){
+  const parts = [];
+  let cur = [], bytes = 0, start = 0;
+  entries.forEach((en, i) => {
+    const b = estimateExportBytes(en);
+    if(cur.length > 0 && (cur.length >= ZIP_PART_MAX_COUNT || bytes + b > ZIP_PART_MAX_BYTES)){
+      parts.push({ start, entries: cur, state:'idle', blob:null, smallCount:0 });
+      cur = []; bytes = 0;
+    }
+    if(cur.length === 0) start = i;
+    cur.push(en); bytes += b;
+  });
+  if(cur.length) parts.push({ start, entries: cur, state:'idle', blob:null, smallCount:0 });
+  return parts;
+}
+
+// Membangun SATU bagian ZIP. partNo/partTotal hanya untuk penamaan & README.
+async function buildZipPart(part, partNo, partTotal, totalEntries){
+  const entries = part.entries, startIndex = part.start;
+  const multi = partTotal > 1;
   const zip = new JSZip();
   const root = zip.folder(currentCategory);
   const photoFolderName = 'foto';
   const photoFolder = root.folder(photoFolderName);
+  const plainFolder = zipPlain ? root.folder('foto_asli_polos') : null;
+  const photoInfo = [];
+  let smallCount = 0;
+
   for(let i = 0; i < entries.length; i++){
     const en = entries[i];
+    if(totalEntries > 3) showToast(`${multi ? `Bagian ${partNo}/${partTotal} · ` : ''}Memproses ${startIndex + i + 1} dari ${totalEntries}...`);
     let exportBlob = en.mediaType === 'video' ? (en.videoBlob || en.thumbBlob) : (en.stampedPhotoBlob || en.photoBlob || en.thumbBlob);
+    let dims = null;
+    const sumber = en.mediaType === 'video' ? null : (en.photoBlob || en.thumbBlob);
     try{
-      const sumber = en.photoBlob || en.thumbBlob;
       if(en.mediaType !== 'video' && en.lat != null && en.lng != null && sumber){
+        lastStampSrc = null;
         exportBlob = await generateStampedPhoto({ ...en, photoBlob: sumber }, { quality:0.97 });
+        dims = lastStampSrc;
       }
     }catch(err){
       console.warn('Gagal memberi stempel koordinat saat ekspor:', err);
     }
-    photoFolder.file(exportPhotoFileName(en, i), exportBlob);
+    if(!dims && sumber) dims = await measureBlobPx(sumber);
+    const info = photoSourceInfo(en, dims);
+    if(info.small) smallCount++;
+    photoInfo.push(info);
+    const fileName = exportPhotoFileName(en, startIndex + i);
+    photoFolder.file(fileName, exportBlob);
+    // Salinan polos (tanpa stempel) = berkas tersimpan apa adanya, tanpa penekanan ulang.
+    if(plainFolder && sumber && !en.cloudThumbOnly && !en.cloudMid) plainFolder.file(fileName, sumber);
   }
 
-  const wb = buildExportWorkbook(entries, photoFolderName);
+  const wb = buildExportWorkbook(entries, photoFolderName, photoInfo, startIndex);
   const workbookBytes = XLSX.write(wb, { bookType:'xlsx', type:'array' });
-  root.file(`GeotagGPS_${currentCategory}.xlsx`, workbookBytes);
-  root.file('README.txt',
+  root.file(multi ? `GeotagGPS_${currentCategory}_bagian${partNo}.xlsx` : `GeotagGPS_${currentCategory}.xlsx`, workbookBytes);
+  let readme =
     'Buka file Excel untuk melihat koordinat, membuka Google Maps, dan membuka foto.\n' +
     'Jangan memindahkan file Excel tanpa folder foto agar tautan foto tetap bekerja.\n' +
-    'Foto dalam folder foto sudah diproses dengan stempel koordinat.\n'
-  );
+    'Foto dalam folder foto sudah diproses dengan stempel koordinat.\n' +
+    'Foto di ZIP memakai resolusi tersimpan (maks 4096 px), tidak diperkecil saat ekspor.\n' +
+    'Kolom "Resolusi Foto (px)" dan "Keterangan Foto" di Excel menunjukkan ukuran tiap foto.\n';
+  if(multi){
+    readme += `\nBAGIAN ${partNo} DARI ${partTotal} (data nomor ${startIndex + 1}–${startIndex + entries.length} dari ${totalEntries}).\n` +
+      'Setiap bagian punya Excel sendiri. Semua bagian boleh diekstrak ke folder yang sama — nama file foto tidak bentrok.\n';
+  }
+  if(plainFolder) readme += 'Folder foto_asli_polos berisi foto yang sama TANPA stempel, apa adanya.\n';
+  if(smallCount > 0){
+    readme += `\nPERHATIAN: ${smallCount} dari ${entries.length} foto di bagian ini beresolusi kecil. Foto dari "Pulihkan dari Cloud" `+
+      'yang belum diperbesar hanya thumbnail (480 px); foto WhatsApp sudah dikecilkan oleh WhatsApp. '+
+      'Foto asli resolusi penuh hanya ada di HP yang pertama kali memotretnya — ekspor ZIP dari HP itu.\n';
+  }
+  root.file('README.txt', readme);
 
-  const content = await zip.generateAsync({ type:'blob' });
-  const url = URL.createObjectURL(content);
+  const blob = await zip.generateAsync({ type:'blob', compression:'STORE' });
+  const date = new Date().toISOString().slice(0,10);
+  const fileName = multi ? `GeotagGPS_${currentCategory}_${date}_bagian${partNo}dari${partTotal}.zip` : `GeotagGPS_${currentCategory}_${date}.zip`;
+  return { blob, smallCount, fileName };
+}
+
+function saveBlobAsFile(blob, fileName){
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url;
-  a.download = `GeotagGPS_${currentCategory}_${new Date().toISOString().slice(0,10)}.zip`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
-  showToast('ZIP lengkap berhasil diunduh: Excel + foto + koordinat + tautan peta.');
+  a.href = url; a.download = fileName;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 8000);
+}
+
+async function exportZip(){
+  const entries = (await getEntriesByCategory(currentCategory)).sort((a,b) => a.timestamp - b.timestamp);
+  if(entries.length === 0){ showToast('Belum ada data untuk diekspor.'); return; }
+  const parts = planZipParts(entries);
+  if(parts.length === 1){
+    showToast('Menyiapkan paket ZIP lengkap, mohon tunggu...');
+    const r = await buildZipPart(parts[0], 1, 1, entries.length);
+    saveBlobAsFile(r.blob, r.fileName);
+    showToast(r.smallCount > 0
+      ? `ZIP diunduh. ⚠️ ${r.smallCount} dari ${entries.length} foto beresolusi kecil (thumbnail cloud / WhatsApp) — lihat kolom "Keterangan Foto" di Excel.`
+      : 'ZIP lengkap berhasil diunduh: Excel + foto + koordinat + tautan peta.');
+    return;
+  }
+  zipPlan = { parts, total: entries.length, busy:false };
+  openZipSheet();
+}
+
+function renderZipSheet(){
+  if(!zipPlan) return;
+  const p = zipPlan;
+  const info = [];
+  info.push(`<b>${p.total} data</b> dibagi jadi <b>${p.parts.length} bagian ZIP</b> supaya memori HP tidak habis (maks ${ZIP_PART_MAX_COUNT} file atau ±${Math.round(ZIP_PART_MAX_BYTES / 1048576)} MB per bagian).`);
+  info.push('Ketuk <b>Siapkan</b> → tunggu → ketuk <b>Simpan</b>. Kerjakan berurutan, satu bagian sampai selesai.');
+  info.push('Tiap bagian punya Excel sendiri; semua bagian boleh diekstrak ke folder yang sama.');
+  document.getElementById('zipSheetInfo').innerHTML = info.join('<br>');
+  const box = document.getElementById('zipSheetButtons');
+  box.innerHTML = '';
+  const someActive = p.parts.some(x => x.state === 'ready');
+  p.parts.forEach((part, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    const range = `data ${part.start + 1}–${part.start + part.entries.length}`;
+    const label = `Bagian ${i + 1} dari ${p.parts.length} (${range})`;
+    b.className = 'share-part-btn' + (part.state === 'done' ? ' done' : '');
+    if(part.state === 'ready'){
+      b.textContent = `⬇️ Simpan ${label} · ${(part.blob.size / 1048576).toFixed(1)} MB`;
+    }else if(part.state === 'building'){
+      b.textContent = `⏳ Menyiapkan ${label}...`; b.disabled = true;
+    }else if(part.state === 'done'){
+      b.textContent = `✅ ${label} tersimpan (ketuk untuk buat ulang)`;
+    }else{
+      b.textContent = `🗜️ Siapkan ${label}`;
+    }
+    // Hanya satu bagian yang boleh disiapkan/ditahan di memori pada satu waktu.
+    if(part.state !== 'ready' && part.state !== 'building' && (p.busy || someActive)) b.disabled = true;
+    b.addEventListener('click', () => zipSheetPart(i));
+    box.appendChild(b);
+  });
+}
+function openZipSheet(){
+  renderZipSheet();
+  document.getElementById('zipSheet').classList.add('show');
+  bfPush('zipSheet');
+}
+function closeZipSheet(){ bfClose('zipSheet'); }
+function _viewCloseZipSheet(){
+  document.getElementById('zipSheet').classList.remove('show');
+  if(zipPlan) zipPlan.parts.forEach(x => { x.blob = null; });   // lepaskan memori
+  zipPlan = null;
+}
+async function zipSheetPart(i){
+  const p = zipPlan;
+  const part = p && p.parts[i];
+  if(!part || p.busy) return;
+  if(part.state === 'ready'){                       // ketukan baru = izin unduh segar
+    const r = part.result;
+    saveBlobAsFile(part.blob, r.fileName);
+    part.blob = null; part.result = null; part.state = 'done';
+    showToast(`Bagian ${i + 1} dari ${p.parts.length} disimpan.`);
+    renderZipSheet();
+    return;
+  }
+  p.busy = true; part.state = 'building'; renderZipSheet();
+  try{
+    const r = await buildZipPart(part, i + 1, p.parts.length, p.total);
+    part.blob = r.blob; part.result = r; part.state = 'ready';
+    showToast(r.smallCount > 0
+      ? `Bagian ${i + 1} siap. ⚠️ ${r.smallCount} foto beresolusi kecil — lihat kolom "Keterangan Foto".`
+      : `Bagian ${i + 1} siap — ketuk Simpan.`);
+  }catch(e){
+    console.error('Gagal menyiapkan bagian ZIP:', e);
+    part.state = 'idle';
+    showToast('Gagal menyiapkan bagian ini (memori HP penuh?). Tutup aplikasi lain lalu coba lagi.');
+  }finally{
+    p.busy = false;
+    if(zipPlan === p) renderZipSheet();
+  }
 }
 
 /* ==========================================================================
@@ -3184,6 +3512,7 @@ function _closeBfLayerView(layerName){
   else if(layerName === 'liveRecordModal') _viewCloseLiveRecordModal();
   else if(layerName === 'mapTypeOverlay') _viewCloseMapTypeSheet();
   else if(layerName === 'shareSheet') _viewCloseShareSheet();
+  else if(layerName === 'zipSheet') _viewCloseZipSheet();
   else if(layerName === 'category') _viewGoToMenu();
 }
 
@@ -3253,7 +3582,10 @@ window.addEventListener('DOMContentLoaded', () => {
   setMapType(mapType);
   document.querySelectorAll('[data-shareq]').forEach(btn => btn.addEventListener('click', () => setShareQuality(btn.dataset.shareq)));
   setShareQuality(shareQuality);
+  document.querySelectorAll('[data-zipplain]').forEach(btn => btn.addEventListener('click', () => setZipPlain(btn.dataset.zipplain === 'on')));
+  setZipPlain(zipPlain);
   document.getElementById('btnShareSheetClose').addEventListener('click', closeShareSheet);
+  document.getElementById('btnZipSheetClose').addEventListener('click', closeZipSheet);
   document.getElementById('btnBatchSelectAll').addEventListener('click', onBatchSelectAll);
   // Saat HP diputar, bingkai pratinjau langsung disesuaikan (kalau sedang
   // mode Otomatis dan tidak sedang merekam).
@@ -3354,6 +3686,9 @@ setInterval(retryPendingCloudSync, 45000);
    JavaScript LAMA yang masih ada di memori walau file di server sudah
    baru dan service worker baru sudah aktif — inilah yang selama ini
    bikin perbaikan terasa "tidak kepakai" di HP. */
+// v48: minta penyimpanan permanen supaya foto asli di HP (IndexedDB) tidak
+// dihapus otomatis oleh browser saat memori HP menipis.
+try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
 if('serviceWorker' in navigator){
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('sw.js').catch(err => console.error('SW gagal:', err));

@@ -1,0 +1,113 @@
+FIRESTORE_RULES.txt — Geotag GPS v49
+====================================
+Aturan Firestore yang lebih ketat. Semua langkah bisa dikerjakan dari HP
+lewat browser (console.firebase.google.com), tanpa laptop.
+
+RINGKASAN
+- Membaca data tetap terbuka (Peta Pantau publik tetap jalan).
+- Menulis / mengubah / menghapus data sekarang WAJIB login (login anonim
+  otomatis oleh aplikasi) dan hanya PEMILIK data yang boleh mengubah/menghapus.
+- Data lama (belum punya pemilik) tetap bisa diubah selama TAHAP 1, supaya
+  tiap HP bisa "mengklaim" datanya sendiri. Setelah semua HP klaim -> TAHAP 2.
+- Foto cloud yang lebih besar (koleksi geofoto_foto) hanya bisa dibaca yang
+  sudah login; tidak tampil di Peta Pantau publik.
+- Batas ukuran/tipe isian dicek (koordinat harus angka yang wajar, catatan
+  dan foto ada batas panjangnya).
+
+URUTAN LANGKAH (JANGAN DIBALIK)
+1. Firebase Console > Build > Authentication > Get started > Sign-in method
+   > Anonymous > Enable > Save.
+2. Pasang aplikasi v49 di SEMUA HP petugas: buka aplikasi dengan internet,
+   tutup total lalu buka lagi sampai muncul versi baru. Biarkan tiap HP
+   terhubung internet beberapa menit (aplikasi mengklaim datanya dan
+   mengirim foto ±1280 px di latar belakang, beberapa foto per 45 detik).
+3. Firebase Console > Build > Firestore Database > Rules > tempel TAHAP 1 di
+   bawah > Publish.
+   (HP yang masih aplikasi lama tidak bisa menulis/menghapus di cloud setelah
+   ini — datanya aman di HP dan akan terkirim setelah aplikasinya diperbarui.)
+4. Setelah beberapa hari dan semua petugas sudah membuka v49 dengan internet,
+   ganti ke TAHAP 2 (hapus bagian "ownerOf(resource.data) == null ||").
+5. Bila ada masalah: kembalikan aturan lama lewat tombol riwayat di halaman
+   Rules, atau tempel aturan lama (allow read/create/update/delete: if true).
+
+CATATAN: aturan ini belum diuji dengan Firebase Emulator (tidak tersedia di
+lingkungan pembuatan). Firebase Console memeriksa sintaks saat Publish; setelah
+itu uji: ambil 1 foto, hapus 1 foto, buka Peta Pantau.
+
+------------------------------------------------------------------
+TAHAP 1 (transisi) — tempel ini dulu
+------------------------------------------------------------------
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function ownerOf(d) {
+      return d.get('ownerUid', null);
+    }
+    function validEntry(d) {
+      return d.keys().hasAll(['category', 'lat', 'lng', 'timestamp'])
+        && d.category is string && d.category.size() <= 40
+        && (d.lat == null || (d.lat is number && d.lat >= -90 && d.lat <= 90))
+        && (d.lng == null || (d.lng is number && d.lng >= -180 && d.lng <= 180))
+        && d.timestamp is number
+        && (!('businessName' in d) || (d.businessName is string && d.businessName.size() <= 300))
+        && (!('address' in d) || (d.address is string && d.address.size() <= 600))
+        && (!('note' in d) || (d.note is string && d.note.size() <= 2000))
+        && (!('thumbDataUrl' in d) || (d.thumbDataUrl is string && d.thumbDataUrl.size() <= 300000));
+    }
+
+    match /geofoto_entries/{docId} {
+      allow read: if true;
+      allow create: if signedIn()
+        && validEntry(request.resource.data)
+        && ownerOf(request.resource.data) == request.auth.uid;
+      allow update: if signedIn()
+        && validEntry(request.resource.data)
+        && (ownerOf(resource.data) == null || ownerOf(resource.data) == request.auth.uid)
+        && ownerOf(request.resource.data) == request.auth.uid;
+      allow delete: if signedIn()
+        && (ownerOf(resource.data) == null || ownerOf(resource.data) == request.auth.uid);
+    }
+
+    match /geofoto_foto/{docId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+        && request.resource.data.keys().hasOnly(['dataUrl', 'ownerUid', 'timestamp'])
+        && request.resource.data.dataUrl is string
+        && request.resource.data.dataUrl.size() <= 900000
+        && request.resource.data.ownerUid == request.auth.uid
+        && (resource == null || resource.data.ownerUid == request.auth.uid);
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+  }
+}
+
+------------------------------------------------------------------
+TAHAP 2 (ketat) — bedanya hanya di update & delete koleksi geofoto_entries
+------------------------------------------------------------------
+      allow update: if signedIn()
+        && validEntry(request.resource.data)
+        && ownerOf(resource.data) == request.auth.uid
+        && ownerOf(request.resource.data) == request.auth.uid;
+      allow delete: if signedIn()
+        && ownerOf(resource.data) == request.auth.uid;
+(bagian lain sama persis dengan TAHAP 1)
+
+------------------------------------------------------------------
+BATAS YANG PERLU DIKETAHUI
+------------------------------------------------------------------
+- Login anonim BUKAN kata sandi: siapa pun yang membuka aplikasi bisa
+  mendapat login anonim, jadi orang yang sengaja bisa menambah data baru.
+  Yang terlindungi: data orang lain tidak bisa ditimpa/dihapus. Untuk
+  perlindungan lebih kuat nanti bisa ditambah Firebase App Check.
+- Bila HP di-reset / data browser dihapus, login anonim baru berbeda dan
+  data lama dari HP itu tidak bisa diubah/dihapus lagi dari HP tersebut
+  (tetap terbaca dan tampil di Peta Pantau).
+- Peta Pantau publik masih menampilkan nama usaha, koordinat, catatan, dan
+  thumbnail (isi koleksi geofoto_entries dibaca terbuka).
+- Kuota gratis Firestore: 1 GiB simpanan, 50 ribu baca & 20 ribu tulis/hari.
+  Foto sedang ±100–250 KB per foto -> kira-kira 4.000–8.000 foto per 1 GiB
+  (bersama thumbnail). Pantau di Firebase Console > Usage.
