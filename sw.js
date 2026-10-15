@@ -1,5 +1,5 @@
 // Geotag GPS - Service Worker
-const CACHE_NAME = 'geotag-gps-v51';
+const CACHE_NAME = 'geotag-gps-v52';
 const TILE_CACHE = 'geotag-tiles-v1';
 const TILE_MAX = 400;   // batas jumlah tile peta yang disimpan (v48)
 const CACHEABLE_HOSTS = ['cdnjs.cloudflare.com', 'www.gstatic.com'];
@@ -9,6 +9,7 @@ const APP_SHELL = [
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
+  './logo-paser.png',
   './app.js',
   './peta-pantau.html',
   './pantau.js',

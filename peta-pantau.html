@@ -24,6 +24,7 @@
   }
   header h1{margin:0 0 3px 0;font-size:1.15rem;display:flex;align-items:center;justify-content:center;gap:8px;}
   header p{margin:0;font-size:.72rem;opacity:.85;}
+  header .hdr-logo{display:block;height:44px;width:auto;margin:22px auto 6px auto;filter:drop-shadow(0 2px 4px rgba(0,0,0,.35));}
   .back-link{position:absolute;left:14px;top:16px;color:#fff;text-decoration:none;font-size:.72rem;background:rgba(255,255,255,.14);padding:7px 10px;border-radius:8px;}
   .live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#2ecc71;box-shadow:0 0 0 rgba(46,204,113,.6);animation:pulseDot 1.6s infinite;}
   @keyframes pulseDot{0%{box-shadow:0 0 0 0 rgba(46,204,113,.6);}70%{box-shadow:0 0 0 8px rgba(46,204,113,0);}100%{box-shadow:0 0 0 0 rgba(46,204,113,0);}}
@@ -111,6 +112,7 @@
 
 <header>
   <a class="back-link" href="index.html">⬅ Beranda Petugas</a>
+  <img class="hdr-logo" src="logo-paser.png" alt="Lambang Kabupaten Paser" onerror="this.style.display='none'">
   <h1>🛰️ Peta Pantau <span class="live-dot"></span></h1>
   <p>Geotag GPS &middot; BAPENDA Kabupaten Paser &middot; data diperbarui otomatis (real-time)</p>
 </header>
